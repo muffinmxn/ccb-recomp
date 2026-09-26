@@ -27,6 +27,8 @@ use crate::{
 
 /// Render layer used by layouts and their camera.
 pub const UI_LAYER: usize = 1;
+/// Layout space height; the overlay camera shows this many units vertically.
+pub const LAYOUT_HEIGHT: f32 = 456.0;
 /// Frames per second of layout animations.
 pub const LYT_FPS: f32 = 60.0;
 
@@ -44,7 +46,7 @@ fn spawn_ui_camera(mut commands: Commands) {
         Camera3d::default(),
         Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
         Projection::Orthographic(OrthographicProjection {
-            scaling_mode: bevy::camera::ScalingMode::FixedVertical { viewport_height: 456.0 },
+            scaling_mode: bevy::camera::ScalingMode::FixedVertical { viewport_height: LAYOUT_HEIGHT },
             ..OrthographicProjection::default_3d()
         }),
         Tonemapping::None,
@@ -119,14 +121,19 @@ impl LayoutAssets {
         }
         let font = Font::parse(self.files.get(name)?).ok()?;
         // NW4R treats intensity-only (I4/I8) font sheets as alpha masks; the text color
-        // supplies the RGB. Our decoder gives (I, I, I, I), so force RGB to white.
+        // supplies the RGB. Our decoder gives (I, I, I, I), so force RGB to white. The
+        // "3D" fonts store shading in the intensity, so coverage is boosted to keep glyph
+        // bodies solid (the original layers shadow/outline font variants on top).
         let sheets = font
             .sheets
             .iter()
             .map(|s| {
                 let mut px = s.clone();
                 if px.chunks_exact(4).all(|c| c[0] == c[3]) {
-                    px.chunks_exact_mut(4).for_each(|c| c[..3].fill(255));
+                    px.chunks_exact_mut(4).for_each(|c| {
+                        c[3] = (c[3] as u32 * 2).min(255) as u8;
+                        c[..3].fill(255);
+                    });
                 }
                 images.add(rgba_image(font.sheet_width as usize, font.sheet_height as usize, px))
             })
@@ -134,6 +141,18 @@ impl LayoutAssets {
         let f = Arc::new(FontAsset { font, sheets });
         self.fonts.insert(name.to_string(), f.clone());
         Some(f)
+    }
+
+    /// A unit quad and material showing one texture (for sprites outside layouts).
+    pub fn sprite(
+        &mut self,
+        texture: &str,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<GxMaterial>,
+        images: &mut Assets<Image>,
+    ) -> (Handle<Mesh>, Handle<GxMaterial>) {
+        let tex = self.texture(texture, images);
+        (self.unit_quad(meshes), materials.add(layout_material(None, tex)))
     }
 
     fn unit_quad(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
@@ -172,6 +191,9 @@ fn layout_material(mat: Option<&wii_formats::lyt::LytMaterial>, texture: Option<
     let v = |c: [i16; 4]| Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32) / 255.0;
     p.regs = [Vec4::ZERO, v(black), v(white), mat.map_or(Vec4::ZERO, |m| v(m.tev_colors[2]))];
     p.konst[3] = Vec4::ONE;
+    if let Some(srt) = mat.and_then(|m| m.tex_srt.first()) {
+        p.set_tex_srt(*srt);
+    }
     GxMaterial {
         params: p,
         tex0: texture,
@@ -204,6 +226,8 @@ pub struct LayoutPane {
     material_index: Option<usize>,
     /// Alpha after inheriting from parents (computed each frame).
     global_alpha: f32,
+    /// Extra scale applied on top of the animated scale (button rollover etc.).
+    pub scale_mul: f32,
     parent: Option<usize>,
     influenced_alpha: bool,
 }
@@ -222,6 +246,22 @@ impl LayoutRoot {
     pub fn pane(&self, name: &str) -> Option<Entity> {
         self.names.get(name).map(|&i| self.panes[i])
     }
+
+    /// Materials drawn by the named pane.
+    pub fn pane_materials(&self, name: &str) -> Vec<Handle<GxMaterial>> {
+        self.names
+            .get(name)
+            .and_then(|&i| self.layout.pane_material(i))
+            .and_then(|m| self.materials.get(&m).cloned())
+            .unwrap_or_default()
+    }
+}
+
+/// Whether a layout-space point lies inside a pane's rectangle (e.g. a bounding pane).
+pub fn pane_contains(pane: &LayoutPane, gt: &GlobalTransform, point: Vec2) -> bool {
+    let local = gt.affine().inverse().transform_point3(point.extend(0.0));
+    let off = origin_offset(pane.origin, pane.cur.size);
+    local.x >= off.x && local.x <= off.x + pane.cur.size.x && local.y <= off.y && local.y >= off.y - pane.cur.size.y
 }
 
 /// Animations playing on a layout, each with its local frame (0 = the clip's start).
@@ -414,6 +454,7 @@ pub fn spawn_layout(
             material,
             material_index,
             global_alpha: 1.0,
+            scale_mul: 1.0,
             parent: p.parent,
             influenced_alpha: p.influenced_alpha,
         });
@@ -464,6 +505,13 @@ fn animate_layouts(
                                             4..=7 => m.params.konst[reg - 4][comp] = v / 255.0,
                                             _ => {}
                                         }
+                                    }
+                                    AnimKind::TextureSrt if c.index == 0 => {
+                                        let mut srt = root.layout.materials[mi].tex_srt.first().copied().unwrap_or([0.0, 0.0, 0.0, 1.0, 1.0]);
+                                        if let Some(v0) = srt.get_mut(c.target as usize) {
+                                            *v0 = v;
+                                        }
+                                        m.params.set_tex_srt(srt);
                                     }
                                     AnimKind::TexturePattern => {
                                         if let Some(t) = a.textures.get(v as usize) {
@@ -520,7 +568,7 @@ fn sync_panes(
             *tr = Transform {
                 translation: Vec3::new(s.translate.x, s.translate.y, 0.0),
                 rotation: Quat::from_rotation_z(s.rotate.z.to_radians()),
-                scale: Vec3::new(s.scale.x, s.scale.y, 1.0),
+                scale: Vec3::new(s.scale.x * pane.scale_mul, s.scale.y * pane.scale_mul, 1.0),
             };
             *vis = if s.visible { Visibility::Inherited } else { Visibility::Hidden };
             if let Some(v) = pane.visual {

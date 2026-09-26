@@ -10,8 +10,10 @@ mod anim;
 mod data;
 mod g3d;
 mod gx_material;
+mod hud;
 mod layout;
 mod level;
+mod pointer;
 mod shot;
 mod title;
 
@@ -83,6 +85,8 @@ fn main() -> AppExit {
         anim::AnimPlugin,
         layout::LayoutPlugin,
         title::TitlePlugin,
+        pointer::PointerPlugin,
+        hud::HudPlugin,
     ))
     .add_systems(Update, title::hide_panes);
     if opts.screenshot.is_some() {

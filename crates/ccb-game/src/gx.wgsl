@@ -14,6 +14,7 @@ struct GxParams {
     // PREV, C0, C1, C2 (may exceed 0..1: TEV registers are 10-bit signed)
     regs: array<vec4<f32>, 4>,
     konst: array<vec4<f32>, 4>,
+    tex_mtx: array<vec4<f32>, 2>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> gx: GxParams;
@@ -88,6 +89,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_UVS_A
     uv = in.uv;
 #endif
+    uv = vec2(dot(gx.tex_mtx[0].xyz, vec3(uv, 1.0)), dot(gx.tex_mtx[1].xyz, vec3(uv, 1.0)));
     var ras = vec4(1.0);
 #ifdef VERTEX_COLORS
     ras = in.color;

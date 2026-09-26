@@ -66,7 +66,10 @@ docs/            per-subsystem reverse-engineering notes
   - [x] BRLYT/BRLAN/BRFNT parsers (all 29 layouts, 141 animations, 21 fonts parse).
   - [x] Layout renderer: pane tree, origins, alpha inheritance, default NW4R combiner via the TEV shader, bitmap text.
   - [x] BRLAN playback with group binding (`pat1`) and timeline windows; title screen matches the original.
-  - [ ] Pointer input + button rollover/click, screen transitions, HUD in levels, custom LYT TEV stages (41 materials), window frames.
+  - [x] Pointer (mouse → layout space, game hand cursor), main-menu rollover/click, title → level transition.
+  - [x] HUD in levels: health bars (pane offset + texture SRT scroll), rounds stars, team icons, clock state.
+  - [ ] Gesture circle (`blueprints`) and attack buttons (`attackIfc`) — wired up with gameplay in M5.
+  - [ ] Custom LYT TEV stages (41 materials), window frames, remaining menu screens (battle settings, coop, credits).
 - [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.
 - [ ] **M6 AI (`ki.cfg`).** CPU opponent driven by the original parameters.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**

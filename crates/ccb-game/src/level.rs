@@ -44,6 +44,7 @@ fn spawn_level(
     mut materials: ResMut<Assets<crate::gx_material::GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut audio: ResMut<Assets<AudioSource>>,
+    mut lyt: ResMut<crate::layout::LayoutAssets>,
 ) {
     let level = opts.level.clone().unwrap_or_else(|| "city.1".into());
     let result: Result<()> = (|| {
@@ -56,7 +57,9 @@ fn spawn_level(
         let clips: Vec<Arc<wii_formats::chr0::Chr0>> = scene.bone_animations()?.into_iter().map(Arc::new).collect();
         let clip = |name: &str| clips.iter().find(|c| c.name == name).cloned();
 
-        let root = commands.spawn((Name::new(format!("level.{level}")), Transform::default(), Visibility::default())).id();
+        let root = commands
+            .spawn((Name::new(format!("level.{level}")), Transform::default(), Visibility::default(), DespawnOnExit(crate::Screen::Level)))
+            .id();
         for (name, _) in scene.folder("3DModels(NW4R)") {
             if name.ends_with("Blend") {
                 continue; // full-screen fade overlay, driven by gameplay
@@ -72,10 +75,29 @@ fn spawn_level(
         }
 
         spawn_sky(&mut commands, root, &common, &textures, &mut meshes, &mut materials, &mut images)?;
-        spawn_camera(&mut commands, &data, false)?;
+        let cam = spawn_camera(&mut commands, &data, false)?;
+        commands.entity(cam).insert(DespawnOnExit(crate::Screen::Level));
+
+        // HUD: team names are the teams' hat names ("CHICK GANG" is the default hat).
+        let team = crate::layout::display_text(data.msgs.get("CCB_HAT_NAKED").unwrap_or("CHICK GANG"));
+        let hud_texts = crate::layout::TextSetup {
+            strings: [("tbTeamName0", team.clone()), ("tbTeamName1", team), ("txtCountdown", String::new()), ("txtBgCountdown", String::new())]
+                .into_iter()
+                .collect(),
+            color: None,
+        };
+        let hud = crate::layout::spawn_layout(&mut commands, &mut lyt, "hud", &hud_texts, &mut meshes, &mut materials, &mut images)?;
+        // The clock shows every team state at once until the game picks one via an animation.
+        let mut hud_anim = crate::layout::LayoutAnimator::default();
+        hud_anim.play(lyt.animation("hud_clockStartYellow")?);
+        commands.entity(hud).insert((DespawnOnExit(crate::Screen::Level), hud_anim, crate::hud::Hud::default()));
 
         let music = data.read(&format!("sounds/{}", def.music))?;
-        commands.spawn((AudioPlayer::new(audio.add(AudioSource { bytes: music.into() })), PlaybackSettings::LOOP));
+        commands.spawn((
+            AudioPlayer::new(audio.add(AudioSource { bytes: music.into() })),
+            PlaybackSettings::LOOP,
+            DespawnOnExit(crate::Screen::Level),
+        ));
         info!("loaded level {level} ({} + {}, music {})", def.theme_brres, def.level_brres, def.music);
         Ok(())
     })();
@@ -116,7 +138,7 @@ pub fn spawn_sky(
 
 /// Spawns the 3D camera from `ingame.view.renderer` (16:9 variant). Menus raise the
 /// camera by `camManagerMenuOffset`.
-pub fn spawn_camera(commands: &mut Commands, data: &GameData, menu: bool) -> Result<()> {
+pub fn spawn_camera(commands: &mut Commands, data: &GameData, menu: bool) -> Result<Entity> {
     let view = data.cfg.block("ingame.view.renderer")?;
     let lines = |label: &str| -> Vec<Vec3> {
         view.lines
@@ -136,11 +158,12 @@ pub fn spawn_camera(commands: &mut Commands, data: &GameData, menu: bool) -> Res
         aim += off;
     }
     let fov = view.f32("camFov").unwrap_or(35.0);
-    commands.spawn((
-        Camera3d::default(),
-        Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection { fov: fov.to_radians(), ..default() }),
-        Transform::from_translation(pos).looking_at(aim, Vec3::Y),
-    ));
-    Ok(())
+    Ok(commands
+        .spawn((
+            Camera3d::default(),
+            Tonemapping::None,
+            Projection::Perspective(PerspectiveProjection { fov: fov.to_radians(), ..default() }),
+            Transform::from_translation(pos).looking_at(aim, Vec3::Y),
+        ))
+        .id())
 }

@@ -22,7 +22,7 @@ impl Plugin for GxMaterialPlugin {
     }
 }
 
-#[derive(Clone, Copy, Default, ShaderType, Debug)]
+#[derive(Clone, Copy, ShaderType, Debug)]
 pub struct GxParams {
     pub info: UVec4,
     pub color_env: [UVec4; 4],
@@ -30,6 +30,36 @@ pub struct GxParams {
     pub order: [UVec4; 4],
     pub regs: [Vec4; 4],
     pub konst: [Vec4; 4],
+    /// Texture-coordinate matrix rows: `uv' = (dot(row0.xyz, (u, v, 1)), dot(row1.xyz, (u, v, 1)))`.
+    pub tex_mtx: [Vec4; 2],
+}
+
+impl Default for GxParams {
+    fn default() -> Self {
+        Self {
+            info: UVec4::ZERO,
+            color_env: [UVec4::ZERO; 4],
+            alpha_env: [UVec4::ZERO; 4],
+            order: [UVec4::ZERO; 4],
+            regs: [Vec4::ZERO; 4],
+            konst: [Vec4::ZERO; 4],
+            tex_mtx: [Vec4::new(1.0, 0.0, 0.0, 0.0), Vec4::new(0.0, 1.0, 0.0, 0.0)],
+        }
+    }
+}
+
+impl GxParams {
+    /// Sets the texture matrix from an NW4R texture SRT (translate s/t, rotate degrees,
+    /// scale s/t); scale and rotation pivot on the texture center.
+    pub fn set_tex_srt(&mut self, srt: [f32; 5]) {
+        let [tx, ty, rot, sx, sy] = srt;
+        let (sin, cos) = rot.to_radians().sin_cos();
+        let (a, b, c, d) = (sx * cos, -sy * sin, sx * sin, sy * cos);
+        // uv' = M * (uv - 0.5) + 0.5 + t
+        let ox = 0.5 - (a * 0.5 + b * 0.5) + tx;
+        let oy = 0.5 - (c * 0.5 + d * 0.5) + ty;
+        self.tex_mtx = [Vec4::new(a, b, ox, 0.0), Vec4::new(c, d, oy, 0.0)];
+    }
 }
 
 /// Pipeline state that needs a separate render pipeline.
