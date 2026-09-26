@@ -11,6 +11,7 @@ use wii_formats::lz;
 pub struct GameData {
     pub dir: PathBuf,
     pub cfg: Config,
+    #[allow(dead_code)] // used once menus and HUD exist
     pub msgs: Messages,
     /// Decompressed BRRES archives by file name (without `.LZ`).
     brres: HashMap<String, Vec<u8>>,

@@ -1,10 +1,12 @@
 //! Loads a level as described by `cfg/levels.cfg` and sets up camera and music.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
-use bevy::{audio::AudioSource, prelude::*};
+use bevy::{audio::AudioSource, core_pipeline::tonemapping::Tonemapping, prelude::*};
 use wii_formats::brres::Brres;
 
-use crate::{data::GameData, g3d, Options};
+use crate::{anim::BoneAnimator, data::GameData, g3d, Options};
 
 pub struct LevelPlugin;
 
@@ -49,6 +51,8 @@ fn spawn_level(
         let scene = data.brres(&def.level_brres)?.to_vec();
         let (theme, scene) = (Brres::parse(&theme)?, Brres::parse(&scene)?);
         let textures = g3d::load_textures(&[&theme, &scene], &mut images);
+        let clips: Vec<Arc<wii_formats::chr0::Chr0>> = scene.bone_animations()?.into_iter().map(Arc::new).collect();
+        let clip = |name: &str| clips.iter().find(|c| c.name == name).cloned();
 
         let root = commands.spawn((Name::new(format!("level.{}", opts.level)), Transform::default(), Visibility::default())).id();
         for (name, _) in scene.folder("3DModels(NW4R)") {
@@ -56,7 +60,13 @@ fn spawn_level(
                 continue; // full-screen fade overlay, driven by gameplay
             }
             let model = scene.model(name)?;
-            g3d::spawn_model(&mut commands, root, &model, &textures, &mut meshes, &mut materials, &mut images);
+            let e = g3d::spawn_model(&mut commands, root, &model, &textures, &mut meshes, &mut materials, &mut images);
+            // `<model>__default` is a one-frame pre-intro pose; `<model>__intro` then plays
+            // once and holds its last frame. (`won`/`lost`/`shock*` are triggered by gameplay.)
+            let queue: Vec<_> = [format!("{name}__default"), format!("{name}__intro")].iter().filter_map(|n| clip(n)).collect();
+            if !queue.is_empty() {
+                commands.entity(e).insert(BoneAnimator::new(queue));
+            }
         }
 
         // Camera from ingame.view.renderer (16:9 variant).
@@ -73,6 +83,7 @@ fn spawn_level(
         let fov = view.f32("camFov").unwrap_or(35.0);
         commands.spawn((
             Camera3d::default(),
+            Tonemapping::None,
             Projection::Perspective(PerspectiveProjection { fov: fov.to_radians(), ..default() }),
             Transform::from_translation(pos).looking_at(aim, Vec3::Y),
         ));

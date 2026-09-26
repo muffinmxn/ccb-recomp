@@ -6,7 +6,7 @@ fn main() -> anyhow::Result<()> {
     let b = wii_formats::brres::Brres::parse(&data)?;
     let m = b.model(&a[2])?;
     for (i, bone) in m.bones.iter().enumerate() {
-        println!("bone {i} {} parent {:?} billboard {} t {:?}", bone.name, bone.parent, bone.billboard, bone.translation);
+        println!("bone {i} {} parent {:?} billboard {} s {:?} r {:?} t {:?}\n  world {:?}", bone.name, bone.parent, bone.billboard, bone.scale, bone.rotation, bone.translation, bone.world);
     }
     for mat in &m.materials {
         println!("material {} cull {} xlu {} {:?}\n  {:?}\n  tev {:?} konst {:?}", mat.name, mat.cull, mat.translucent, mat.textures, mat.pixel, mat.tev_colors, mat.konst_colors);
@@ -23,6 +23,9 @@ fn main() -> anyhow::Result<()> {
             "mesh {} mat {} bone {} xlu {} verts {} uvs {} colors {} uv range {lo:?}..{hi:?} pos0 {:?}",
             x.name, x.material, x.bone, x.translucent, x.positions.len(), x.uvs.len(), x.colors.len(), x.positions.first()
         );
+        if std::env::var("VERBOSE").is_ok() {
+            println!("  positions {:?}\n  vertex bones {:?}", x.positions, x.vertex_bones);
+        }
     }
     Ok(())
 }

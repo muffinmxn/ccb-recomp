@@ -24,11 +24,22 @@ cargo run --release -p ccb-tools -- render city.png extracted/files/0002/models/
 cargo run --release -p ccb-tools -- brres extracted/files/0002/models/city.level1.brres
 ```
 
+## Running the game (work in progress)
+
+```sh
+cargo run --release -p ccb-game -- --level city.1      # also ship.1, graveyard.1, ...
+```
+
+Loads the level scene from your extracted data, plays its intro animation and music.
+`--screenshot out.png` renders ~30 frames, saves a screenshot and exits (works headless
+under `xvfb-run` with Mesa's software Vulkan driver).
+
 ## Crates
 
 | Crate | Purpose |
 |---|---|
-| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES/TEX0/MDL0, all GX texture formats |
+| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0 models, TEX0 textures, CHR0 animations), all GX texture formats |
 | `ccb-extract` | WAD → `extracted/` |
 | `ccb-assets` | the game's `cfg` tuning files and `msgs` string tables |
 | `ccb-tools` | developer dump tools |
+| `ccb-game` | the game itself (Bevy) |

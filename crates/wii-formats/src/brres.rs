@@ -63,6 +63,16 @@ impl<'a> Brres<'a> {
         crate::mdl0::Model::parse(self.data, self.offsets[i])
     }
 
+    /// Parses every CHR0 bone animation in the archive.
+    pub fn bone_animations(&self) -> Result<Vec<crate::chr0::Chr0>> {
+        self.files
+            .iter()
+            .zip(&self.offsets)
+            .filter(|(f, _)| f.0 == "AnmChr(NW4R)")
+            .map(|(f, &o)| crate::chr0::Chr0::parse(self.data, o).with_context(|| f.1.clone()))
+            .collect()
+    }
+
     pub fn folder<'s>(&'s self, folder: &'s str) -> impl Iterator<Item = (&'s str, &'a [u8])> + 's {
         self.files.iter().filter(move |f| f.0 == folder).map(|f| (f.1.as_str(), f.2))
     }

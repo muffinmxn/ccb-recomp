@@ -2,6 +2,7 @@
 //! installable WADs (ticket, TMD, encrypted contents), U8 archives and DOL executables.
 
 pub mod brres;
+pub mod chr0;
 pub mod dol;
 pub mod gx_texture;
 pub mod lz;

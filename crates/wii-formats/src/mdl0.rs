@@ -140,6 +140,9 @@ pub struct Mesh {
     pub uvs: Vec<[f32; 2]>,
     /// Bone each vertex is rigidly bound to, `None` for envelope (multi-bone) vertices.
     pub vertex_bones: Vec<Option<usize>>,
+    /// When every vertex is bound to the same bone: that bone, plus positions and normals
+    /// in its local space (for animating the mesh by moving the bone).
+    pub rigid: Option<(usize, Vec<[f32; 3]>, Vec<[f32; 3]>)>,
     pub indices: Vec<u32>,
 }
 
@@ -540,6 +543,7 @@ fn decode_object(
     let uv_arr = usize::try_from(uv_id).ok().and_then(|i| uvs.get(i));
 
     let mut mesh = Mesh::default();
+    let (mut local_pos, mut local_nrm) = (Vec::new(), Vec::new());
     let mut p = prim;
     let end = prim + prim_size;
     while p < end {
@@ -594,6 +598,10 @@ fn decode_object(
                         mesh.uvs.push([t[0], t[1]]);
                     }
                     mesh.vertex_bones.push(bone);
+                    local_pos.push(pos);
+                    if let Some(n) = nrm {
+                        local_nrm.push(n);
+                    }
                 }
                 let n = count as u32;
                 match op & 0xf8 {
@@ -623,6 +631,11 @@ fn decode_object(
                 }
             }
             op => bail!("unknown display list opcode {op:#x}"),
+        }
+    }
+    if let Some(&Some(b)) = mesh.vertex_bones.first() {
+        if mesh.vertex_bones.iter().all(|&x| x == Some(b)) {
+            mesh.rigid = Some((b, local_pos, local_nrm));
         }
     }
     Ok(mesh)

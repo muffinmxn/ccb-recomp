@@ -83,7 +83,7 @@ pub fn build_material(
     let texture = mat.textures.first().and_then(|t| {
         let (handle, _) = textures.get(&t.texture)?;
         // Apply the layer's wrap modes to the image sampler.
-        if let Some(img) = images.get_mut(handle) {
+        if let Some(mut img) = images.get_mut(handle) {
             img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                 address_mode_u: address_mode(t.wrap[0]),
                 address_mode_v: address_mode(t.wrap[1]),
@@ -113,7 +113,23 @@ pub fn build_material(
     })
 }
 
-/// Spawns a whole model as children of `parent`.
+/// Per-bone entities of a spawned model, used by the animator.
+#[derive(Component)]
+pub struct ModelInstance {
+    pub bone_names: Vec<String>,
+    pub bones: Vec<Entity>,
+    /// Bind-pose (scale, rotation in degrees, translation) per bone.
+    pub bind: Vec<[[f32; 3]; 3]>,
+}
+
+pub fn bone_transform(s: [f32; 3], r_deg: [f32; 3], t: [f32; 3]) -> Transform {
+    // G3D applies rotations X, then Y, then Z.
+    let r = Quat::from_euler(EulerRot::ZYX, r_deg[2].to_radians(), r_deg[1].to_radians(), r_deg[0].to_radians());
+    Transform { translation: Vec3::from(t), rotation: r, scale: Vec3::from(s) }
+}
+
+/// Spawns a model under `parent`: one entity per bone (in hierarchy) and one per mesh.
+/// Meshes bound rigidly to a single bone are parented to it so bone animation moves them.
 pub fn spawn_model(
     commands: &mut Commands,
     parent: Entity,
@@ -122,19 +138,48 @@ pub fn spawn_model(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
-) {
-    for (i, m) in model.meshes.iter().enumerate() {
+) -> Entity {
+    let root = commands
+        .spawn((Name::new(model.name.clone()), Transform::default(), Visibility::default()))
+        .id();
+    commands.entity(parent).add_child(root);
+    let bones: Vec<Entity> = model
+        .bones
+        .iter()
+        .map(|b| {
+            commands
+                .spawn((Name::new(b.name.clone()), bone_transform(b.scale, b.rotation, b.translation), Visibility::default()))
+                .id()
+        })
+        .collect();
+    for (i, b) in model.bones.iter().enumerate() {
+        let p = b.parent.map_or(root, |p| bones[p]);
+        commands.entity(p).add_child(bones[i]);
+    }
+    for m in &model.meshes {
         let Some(mat) = model.materials.get(m.material) else { continue };
         let Some(material) = build_material(mat, m.translucent, textures, images) else { continue };
+        let (owner, mesh) = match &m.rigid {
+            Some((bone, pos, nrm)) => {
+                let local = mdl0::Mesh { positions: pos.clone(), normals: nrm.clone(), ..m.clone() };
+                (bones[*bone], build_mesh(&local))
+            }
+            None => (root, build_mesh(m)),
+        };
         let child = commands
             .spawn((
                 Name::new(format!("{}/{}", model.name, m.name)),
-                Mesh3d(meshes.add(build_mesh(m))),
+                Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(materials.add(material)),
-                // Keep GX draw order stable among translucent meshes.
-                Transform::from_xyz(0.0, 0.0, i as f32 * 1e-4),
+                Transform::default(),
             ))
             .id();
-        commands.entity(parent).add_child(child);
+        commands.entity(owner).add_child(child);
     }
+    commands.entity(root).insert(ModelInstance {
+        bone_names: model.bones.iter().map(|b| b.name.clone()).collect(),
+        bones,
+        bind: model.bones.iter().map(|b| [b.scale, b.rotation, b.translation]).collect(),
+    });
+    root
 }

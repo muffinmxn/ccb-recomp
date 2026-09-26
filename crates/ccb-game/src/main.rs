@@ -4,6 +4,7 @@
 //! ccb-game [--data extracted/files/0002] [--level city.1] [--screenshot out.png]
 //! ```
 
+mod anim;
 mod data;
 mod g3d;
 mod level;
@@ -53,7 +54,7 @@ fn main() -> AppExit {
     }))
     .insert_resource(ClearColor(Color::srgb_u8(33, 96, 168)))
     .insert_resource(game_data)
-    .add_plugins(level::LevelPlugin);
+    .add_plugins((level::LevelPlugin, anim::AnimPlugin));
     if opts.screenshot.is_some() {
         app.add_plugins(shot::ScreenshotPlugin);
     }
