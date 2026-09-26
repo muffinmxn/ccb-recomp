@@ -407,9 +407,16 @@ fn rebuild_text(
     }
 }
 
-/// Converts message text (`\n` escapes, `\_` icon placeholders) to display text.
+/// Converts message text to display text: `\n` escapes become newlines; `\_` icon
+/// placeholders and `\c[..]`/`\c` color codes are dropped (not rendered yet).
 pub fn display_text(s: &str) -> String {
-    s.replace("\\n", "\n").replace("\\_", "")
+    let mut out = s.replace("\\n", "\n").replace("\\_", "");
+    while let Some(i) = out.find("\\c") {
+        let rest = &out[i + 2..];
+        let end = if rest.starts_with('[') { rest.find(']').map_or(2, |j| j + 3) } else { 2 };
+        out.replace_range(i..(i + end).min(out.len()), "");
+    }
+    out
 }
 
 /// Text overrides applied when spawning a layout: strings by pane name, and a color the
@@ -532,7 +539,7 @@ pub fn spawn_layout(
 }
 
 fn animate_layouts(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut roots: Query<(&LayoutRoot, &mut LayoutAnimator)>,
     mut panes: Query<&mut LayoutPane>,
     mut materials: ResMut<Assets<GxMaterial>>,
@@ -684,5 +691,14 @@ fn debug_panes(
                 i, root.layout.panes[i].name, p.cur.visible, vis.get(), p.global_alpha, p.cur.scale, gt.translation(), vinfo
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn display_text_strips_codes() {
+        assert_eq!(super::display_text("Look, \\c[hl]UFOs\\c attack!\\nRun"), "Look, UFOs attack!\nRun");
+        assert_eq!(super::display_text("CONNECT\\_ NOW"), "CONNECT NOW");
     }
 }

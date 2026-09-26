@@ -108,6 +108,8 @@ pub fn spawn_chick(
     let visual = g3d::spawn_model(commands, parent, &assets.model, &assets.textures, meshes, materials, images, &tweak);
     // Each team has one big chick (double health) and small ones.
     let (size, health) = if big { (1.35, 2.0) } else { (0.8, 1.0) };
+    // Debug: CCB_CHICK_HEALTH=0.1 for quick matches.
+    let health = health * std::env::var("CCB_CHICK_HEALTH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
     let radius = tuning.chick_radius * size;
     let scale = radius / assets.radius;
     let y = radius + 6.0;

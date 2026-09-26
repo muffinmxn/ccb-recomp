@@ -83,6 +83,8 @@ docs/            per-subsystem reverse-engineering notes
   - [ ] UFO/ghost/octopus specials and the "race" for specials, attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side.
 - [x] **M6 AI (`ki.cfg`).** CPU attacks after `kiAttackStartTimer` + reaction time with drawing skill/quality per gesture, and defends by drawing shields at `kiDefendByShieldHeight` over the predicted impact, with a difficulty-based miss chance. `CCB_AUTOPLAY=1` lets the CPU play both sides.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**
+  - [x] Arena select (`arenas` layout: city / ship / haunted wood), pause menu (`ingame_pause`, Esc; gameplay time freezes, menus keep animating), game-over banner (`gameover`), then back to arena select.
+  - [ ] Battle settings, rounds, tutorial/story, chicken coop (hats), credits, records, save data.
 - [ ] **M8 Polish.** Particles, 2-player local, widescreen and high resolution.
   - [x] Sound effects: BRSAR → RWSD → RWAR → RWAV, DSP-ADPCM decoder; menus, gestures, clock, attacks, chicks wired to the original SFX.
 

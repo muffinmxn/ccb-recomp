@@ -106,7 +106,8 @@ fn update_hud(
             set(&name, &mut |p| p.cur.translate.x = dir * missing * BAR_WIDTH);
             for h in root.pane_materials(&name) {
                 if let Some(mut m) = materials.get_mut(&h) {
-                    let t = -dir * missing;
+                    // The texture scrolls with the pane so its start stays on the bar's inner edge.
+                    let t = dir * missing;
                     if (m.params.tex_mtx[0].z - t).abs() > 1e-4 {
                         m.params.set_tex_srt([t, 0.0, 0.0, 1.0, 1.0]);
                     }

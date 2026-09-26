@@ -3,7 +3,7 @@
 //! ```text
 //! ccb-game [--data extracted/files/0002] [--level city.1] [--screenshot out.png]
 //!
-//! Without `--level` the game starts at the title screen.
+//! Without `--level` the game starts at the title screen (`--screen arenas` for arena select).
 //! ```
 
 mod anim;
@@ -14,6 +14,8 @@ mod gx_material;
 mod hud;
 mod layout;
 mod level;
+mod menu;
+mod screens;
 mod pointer;
 mod sfx;
 mod shot;
@@ -26,6 +28,8 @@ use bevy::prelude::*;
 pub enum Screen {
     #[default]
     Title,
+    /// Arena selection before a duel.
+    Arenas,
     Level,
 }
 
@@ -35,16 +39,19 @@ pub struct Options {
     /// Start directly in this level instead of the title screen.
     pub level: Option<String>,
     pub screenshot: Option<std::path::PathBuf>,
+    /// Start on this screen (`--screen arenas`).
+    pub start_arenas: bool,
 }
 
 fn parse_args() -> Options {
-    let mut o = Options { data_dir: "extracted/files/0002".into(), level: None, screenshot: None };
+    let mut o = Options { data_dir: "extracted/files/0002".into(), level: None, screenshot: None, start_arenas: false };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--data" => o.data_dir = args.next().expect("--data needs a path").into(),
             "--level" => o.level = Some(args.next().expect("--level needs a name like city.1")),
             "--screenshot" => o.screenshot = args.next().map(Into::into),
+            "--screen" => o.start_arenas = args.next().as_deref() == Some("arenas"),
             other => eprintln!("ignoring unknown argument {other}"),
         }
     }
@@ -83,7 +90,13 @@ fn main() -> AppExit {
     .insert_resource(ClearColor(Color::WHITE))
     .insert_resource(game_data)
     .insert_resource(layouts)
-    .insert_state(if opts.level.is_some() { Screen::Level } else { Screen::Title })
+    .insert_state(if opts.level.is_some() {
+        Screen::Level
+    } else if opts.start_arenas {
+        Screen::Arenas
+    } else {
+        Screen::Title
+    })
     .add_plugins((
         gx_material::GxMaterialPlugin,
         level::LevelPlugin,
@@ -94,6 +107,8 @@ fn main() -> AppExit {
         hud::HudPlugin,
         game::GamePlugin,
         sfx::SfxPlugin,
+        menu::MenuPlugin,
+        screens::ScreensPlugin,
     ))
     .add_systems(Update, title::hide_panes);
     if opts.screenshot.is_some() {

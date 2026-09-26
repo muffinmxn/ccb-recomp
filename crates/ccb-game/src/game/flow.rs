@@ -463,7 +463,7 @@ pub fn run_match(
         Phase::GameOver(t) => {
             m.phase = Phase::GameOver(t + dt);
             if t + dt > 6.0 {
-                next.set(Screen::Title);
+                next.set(Screen::Arenas);
             }
         }
     }
@@ -524,13 +524,11 @@ pub fn player_attack_buttons(
 #[allow(clippy::too_many_arguments)]
 pub fn update_hud(
     mut m: ResMut<Match>,
-    data: Res<GameData>,
     lyt: Res<LayoutAssets>,
     chicks: Query<&Chick>,
     mut huds: Query<(&LayoutRoot, &mut Hud, &mut LayoutAnimator)>,
-    mut panes: Query<&mut LayoutPane>,
+    panes: Query<&mut LayoutPane>,
     mut texts: Query<&mut TextPane>,
-    mut shown_over: Local<bool>,
 ) {
     let Ok((root, mut hud, mut anim)) = huds.single_mut() else { return };
     for t in [Team::Yellow, Team::Black] {
@@ -548,18 +546,5 @@ pub fn update_hud(
     layout::set_text(root, "txtTimeRemain", &format!("{remain:02}"), &panes, &mut texts);
     let secs = m.match_time as i32;
     layout::set_text(root, "txtTimer", &format!("{:02}:{:02}", secs / 60, secs % 60), &panes, &mut texts);
-    if let (Phase::GameOver(_), Some(w), false) = (m.phase, m.winner, *shown_over) {
-        *shown_over = true;
-        let msg = |k: &str, d: &str| layout::display_text(data.msgs.get(k).unwrap_or(d));
-        let text = if w == Team::Yellow { msg("CCB_INGAME_WIN", "YOU WIN!") } else { msg("CCB_INGAME_LOSE", "YOU LOSE!") };
-        if let Some(mut p) = root.pane("countdown").and_then(|e| panes.get_mut(e).ok()) {
-            p.cur.alpha = 1.0;
-            p.cur.scale = Vec2::splat(1.0);
-        }
-        layout::set_text(root, "txtCountdown", &text, &panes, &mut texts);
-        layout::set_text(root, "txtBgCountdown", &text, &panes, &mut texts);
-    }
-    if !matches!(m.phase, Phase::GameOver(_)) {
-        *shown_over = false;
-    }
+
 }
