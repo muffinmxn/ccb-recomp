@@ -50,48 +50,58 @@ crates/
 docs/            per-subsystem reverse-engineering notes
 ```
 
-## Milestones
+## Status
 
-- [x] **M0 Extraction.** Decrypt WAD, verify SHA-1, unpack U8, LZ10/LZ11, find the DOL.
-- [x] **M1 Asset decoding.** cfg + msgs parsers, TPL/TEX0 decode (all GX formats incl. CMPR), PNG dump tool.
-- [x] **M2 Models.** BRRES MDL0 → meshes (vertex arrays, display lists, materials, pixel-engine state); every model in the game parses. `ccb-tools render` draws them on the CPU for checking.
-  - [x] CHR0 bone animations (all 216 parse; Hermite I4/I6/I12 + linear tables).
-  - [x] TEV stages → one WGSL uber-shader (`gx.wgsl`) that evaluates each material's combiner stages, konst colors, alpha test, blend/cull/depth state, in gamma space like the Wii.
-  - [x] VIS0 bone visibility + bone visibility flags (fixes double chick faces, overlapping weight variants, plant parts).
-  - [x] Environment-mapped texture layers (effect-matrix map mode 1: chick/bomb/plant shading).
-  - [x] Skinning: NodeMix envelope weights + inverse binds → Bevy `SkinnedMesh` (the sea-monster tentacle).
-  - [ ] CLR0/SRT0/PAT0 animations; TEV swap tables; lighting channels (currently vertex color or white);
-        the bomb's stripe-mask texgen (stripes render mostly black); >2 texture layers per material.
-- [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
-  - [x] Level scene loads from `levels.cfg`, camera from `view.cfg`, bone hierarchy + intro animation, level music, headless screenshots.
-  - [x] Sky dome + horizon from `common.brres` (its fade stage is runtime-driven; zeroed for play). City, ship and graveyard all render.
-  - [x] Screens: title (default) and level (`--level`).
-- [ ] **M4 2D layouts.** BRLYT panes/pictures/text, BRLAN animation, BRFNT fonts → menus and HUD.
-  - [x] BRLYT/BRLAN/BRFNT parsers (all 29 layouts, 141 animations, 21 fonts parse).
-  - [x] Layout renderer: pane tree, origins, alpha inheritance, default NW4R combiner via the TEV shader, bitmap text.
-  - [x] BRLAN playback with group binding (`pat1`) and timeline windows; title screen matches the original.
-  - [x] Pointer (mouse → layout space, game hand cursor), main-menu rollover/click, title → level transition.
-  - [x] HUD in levels: health bars (pane offset + texture SRT scroll), rounds stars, team icons, clock state.
-  - [ ] Gesture circle (`blueprints`) and attack buttons (`attackIfc`) — wired up with gameplay in M5.
-  - [ ] Custom LYT TEV stages (41 materials), window frames, remaining menu screens (battle settings, coop, credits).
-- [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.
-  - [x] Match flow: clock spin picks the first attacker (`hud_clockStart*`), turns alternate (`hud_clockAttack*`), turn timer from `attackModeTimersDuell`, game over when a team has no chicks.
-  - [x] Chicks: 5 per team (one big with double health), hopping physics, damage, squash, death.
-  - [x] Barriers: pointer drawing on your half, ink account + reload, 1.9 s lifetime, blocking.
-  - [x] Gestures: control points from the `blueprints` layout, quality from `ingame.model.gesture` timings.
-  - [x] Attacks: bomb (arc, deflects off barriers, explodes), weight (variant by quality, blocked by roofs), plant (grows from below, blocked by lids), lightning (level special, blocked by rods/roofs). Damage from the cfg damage settings.
-  - [x] Attack interface like the original 1P screen: basic attacks bottom right, level special on the arc, gesture panel bottom left.
-  - [x] Level specials and the race: a special window opens every `envAssistPauseDuell` s for `ufoEffectiveTimer` s; whoever traces it first launches it, off-turn. UFO (beam; roofs block), sea monster (skinned tentacle sweep; walls block), ghost (eats barriers; two stop it).
-  - [ ] Attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side.
-- [x] **M6 AI (`ki.cfg`).** CPU attacks after `kiAttackStartTimer` + reaction time with drawing skill/quality per gesture, and defends by drawing shields at `kiDefendByShieldHeight` over the predicted impact, with a difficulty-based miss chance. `CCB_AUTOPLAY=1` lets the CPU play both sides.
-- [ ] **M7 Story mode, battle settings, unlocks, save data.**
-  - [x] Arena select (`arenas` layout: city / ship / haunted wood), pause menu (`ingame_pause`, Esc; gameplay time freezes, menus keep animating), game-over banner (`gameover`), then back to arena select.
-  - [ ] Battle settings, rounds, tutorial/story, chicken coop (hats), credits, records, save data.
-- [ ] **M8 Polish.** Particles, 2-player local, widescreen and high resolution.
-  - [x] Sound effects: BRSAR → RWSD → RWAR → RWAV, DSP-ADPCM decoder; menus, gestures, clock, attacks, chicks wired to the original SFX.
+Done: WAD extraction; all asset formats (textures, models incl. skinning, bone/visibility
+animations, layouts, fonts, sounds); TEV shader emulation; title, arena select, pause, HUD;
+duels vs CPU with rounds; bomb/weight/plant; UFO/sea-monster/ghost specials with the special
+race; CPU attack/defence from `ki.*`; sound effects.
 
-Where the data doesn't say how something behaves, we reverse engineer it from `main.dol`
-(Ghidra, or decomp-toolkit's analysis) and record the findings in `docs/`.
+## How the original plays (from the game's own tutorial/tips text)
+
+- Controls: A (left mouse) draws lines, selects, traces; B (right mouse) is the trigger:
+  fire an attack, hit upgrade targets, shoot the Corncobman and the Piñata.
+- Turns: each side has an attack time to launch one basic attack (bomb, weight, plant). You
+  select, trace the dots (faster = stronger), then press the trigger to launch.
+- Defence: draw lines with limited ink on your side; lines vanish after a while. Drawing on the
+  opponent's side (sabotage) costs more ink.
+- Bomb: explodes after a short time; a line cage contains it; touching it while drawing sets it
+  off; rain douses it; lightning detonates it (bigger blast).
+- Weight: its shadow shows where it lands; the blocking line must be at least as wide.
+- Plant: grows up along lines (only upwards), bites chicks near it, withers without bites;
+  lightning destroys it.
+- Specials run independently of the attack time and are raced by both sides:
+  lightning (a dark cloud over one side, which can be your own; defend with an earthed
+  vertical line; lightning hits the highest point), UFO (circles first, abducts a chick for
+  good; horizontal line blocks), sea monster (horizontal lines parry), ghost (disintegrates on
+  touching a line; drains chick energy to the opponent).
+- Upgrades: a fast trace spins a target; hitting green/red with the trigger gives the A/B
+  variant (e.g. bomb → Frog Cracker acid / Ladybug Boom mini-bombs; weight → Chick Fixer glue /
+  Sumo; plant → Scorpion Fern poison / Fire Flower confusion; UFO → Robo / Barbecufo; ...).
+- Corncobman walks in the background; shoot his corn to heal. The Piñata grows as chicks take
+  damage, falls, and is shot toward a side: hats (helmet, nurse, blue light), distortions of the
+  opponent's next 3 templates (wave, pulse, rotation), line bonuses (breaker, ink filler, long).
+- The big chick ("the general") takes more damage.
+- Modes: Duel (1-5 wins), Time (most knockouts, chicks replaced), Pro (survive; only the
+  opponent's chicks are replaced). Difficulty easy/medium/hard. 1-4 players (offense/defense
+  per side). 15 teams (hats) with unlock conditions; save profiles A/B/C; records; a 4-lesson
+  tutorial; the Chicken Coop encyclopedia; round-over popup (next round / stats / main menu).
+
+## What's left, in order
+
+1. **Fix mechanics that differ from the original:** lightning as a weather special (cloud over
+   a side, earthed-rod defence); sea monster parried by horizontal lines; basic ghost dies on
+   lines and drains energy; UFO abducts; weight shadow + width rule; plant climbs lines and
+   withers; trigger (B / right mouse) to launch after tracing; ink cursor indicator.
+2. **Upgrades** (target spin + trigger) and the A/B variants of the three basic attacks.
+3. **Corncobman and Piñata** with shooting; hats, distortions and line bonuses.
+4. **Line sabotage** on the opponent's side; bomb/line interactions; rain.
+5. **Menus:** mode select, battle settings (arena, difficulty, rounds/time), player/team select,
+   round-over popup and stats, Chicken Coop, credits, save profiles and records, unlocks.
+6. **Tutorial:** the 4 lessons driven by the tutorial texts.
+7. **Time and Pro modes**, local multiplayer (gamepads as extra pointers).
+8. **Polish:** particles (breff), remaining TEV details (bomb stripes, >2 texture layers,
+   lighting), widescreen layout adjustment, prebuilt binaries so players don't need Rust.
 
 ## Legal
 
