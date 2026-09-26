@@ -7,6 +7,7 @@
 mod anim;
 mod data;
 mod g3d;
+mod gx_material;
 mod level;
 mod shot;
 
@@ -52,9 +53,9 @@ fn main() -> AppExit {
         }),
         ..default()
     }))
-    .insert_resource(ClearColor(Color::srgb_u8(33, 96, 168)))
+    .insert_resource(ClearColor(Color::WHITE))
     .insert_resource(game_data)
-    .add_plugins((level::LevelPlugin, anim::AnimPlugin));
+    .add_plugins((gx_material::GxMaterialPlugin, level::LevelPlugin, anim::AnimPlugin));
     if opts.screenshot.is_some() {
         app.add_plugins(shot::ScreenshotPlugin);
     }

@@ -2033,6 +2033,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "bytemuck",
  "ccb-assets",
  "wii-formats",
 ]

@@ -41,16 +41,17 @@ fn spawn_level(
     opts: Res<Options>,
     mut data: ResMut<GameData>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<crate::gx_material::GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut audio: ResMut<Assets<AudioSource>>,
 ) {
     let result: Result<()> = (|| {
         let def = LevelDef::load(&data, &opts.level)?;
+        let common = data.brres("common.brres.LZ")?.to_vec();
         let theme = data.brres(&def.theme_brres)?.to_vec();
         let scene = data.brres(&def.level_brres)?.to_vec();
-        let (theme, scene) = (Brres::parse(&theme)?, Brres::parse(&scene)?);
-        let textures = g3d::load_textures(&[&theme, &scene], &mut images);
+        let (common, theme, scene) = (Brres::parse(&common)?, Brres::parse(&theme)?, Brres::parse(&scene)?);
+        let textures = g3d::load_textures(&[&common, &theme, &scene], &mut images);
         let clips: Vec<Arc<wii_formats::chr0::Chr0>> = scene.bone_animations()?.into_iter().map(Arc::new).collect();
         let clip = |name: &str| clips.iter().find(|c| c.name == name).cloned();
 
@@ -60,7 +61,7 @@ fn spawn_level(
                 continue; // full-screen fade overlay, driven by gameplay
             }
             let model = scene.model(name)?;
-            let e = g3d::spawn_model(&mut commands, root, &model, &textures, &mut meshes, &mut materials, &mut images);
+            let e = g3d::spawn_model(&mut commands, root, &model, &textures, &mut meshes, &mut materials, &mut images, &g3d::no_tweak);
             // `<model>__default` is a one-frame pre-intro pose; `<model>__intro` then plays
             // once and holds its last frame. (`won`/`lost`/`shock*` are triggered by gameplay.)
             let queue: Vec<_> = [format!("{name}__default"), format!("{name}__intro")].iter().filter_map(|n| clip(n)).collect();
@@ -68,6 +69,24 @@ fn spawn_level(
                 commands.entity(e).insert(BoneAnimator::new(queue));
             }
         }
+
+        // Sky dome and horizon rings, shared by all levels.
+        // Their materials end with a fade stage, `color * (1 - C2.a) + K0.a`, that the game
+        // drives at runtime (the file stores full white); zero it for normal play.
+        // The `levelCityBlend` quad is a full-screen overlay used by level transitions.
+        let sky = common.model("sky")?;
+        let sky_bones: Vec<String> = sky.bones.iter().map(|b| b.name.clone()).collect();
+        let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut crate::gx_material::GxMaterial| {
+            if sky_bones.get(m.bone).is_some_and(|b| b.ends_with("Blend")) {
+                return false;
+            }
+            if mat.params.info.x == 3 {
+                mat.params.regs[3].w = 0.0;
+                mat.params.konst[0].w = 0.0;
+            }
+            true
+        };
+        g3d::spawn_model(&mut commands, root, &sky, &textures, &mut meshes, &mut materials, &mut images, &tweak);
 
         // Camera from ingame.view.renderer (16:9 variant).
         let view = data.cfg.block("ingame.view.renderer")?;

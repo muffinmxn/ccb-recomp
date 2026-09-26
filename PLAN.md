@@ -56,10 +56,12 @@ docs/            per-subsystem reverse-engineering notes
 - [x] **M1 Asset decoding.** cfg + msgs parsers, TPL/TEX0 decode (all GX formats incl. CMPR), PNG dump tool.
 - [x] **M2 Models.** BRRES MDL0 → meshes (vertex arrays, display lists, materials, pixel-engine state); every model in the game parses. `ccb-tools render` draws them on the CPU for checking.
   - [x] CHR0 bone animations (all 216 parse; Hermite I4/I6/I12 + linear tables).
-  - [ ] TEV stages → WGSL (sky dome, hill, tinted and shadow materials); CLR0/SRT0/VIS0/PAT0 animations.
+  - [x] TEV stages → one WGSL uber-shader (`gx.wgsl`) that evaluates each material's combiner stages, konst colors, alpha test, blend/cull/depth state, in gamma space like the Wii.
+  - [ ] CLR0/SRT0/VIS0/PAT0 animations; TEV swap tables; lighting channels (currently vertex color or white).
 - [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
   - [x] Level scene loads from `levels.cfg`, camera from `view.cfg`, bone hierarchy + intro animation, level music, headless screenshots.
-  - [ ] Sky model, game states.
+  - [x] Sky dome + horizon from `common.brres` (its fade stage is runtime-driven; zeroed for play). City, ship and graveyard all render.
+  - [ ] Game states (boot → title → menu → ingame).
 - [ ] **M4 2D layouts.** BRLYT panes/pictures/text, BRLAN animation, BRFNT fonts → menus and HUD.
 - [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.
 - [ ] **M6 AI (`ki.cfg`).** CPU opponent driven by the original parameters.

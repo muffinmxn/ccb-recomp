@@ -112,9 +112,15 @@ impl PixelState {
 #[derive(Debug, Clone)]
 pub struct Material {
     pub name: String,
+    /// Absolute offsets of the material's display list and shader (for debugging).
+    pub dl_offset: usize,
+    pub shader_offset: usize,
+    /// Active TEV stages, in order.
+    pub tev_stages: Vec<TevStage>,
     pub pixel: PixelState,
-    /// TEV color registers (GX_TEVREG0..2) and konstant colors (KCOLOR0..3), RGBA.
-    pub tev_colors: [[i16; 4]; 3],
+    /// TEV color registers (GX_TEVPREV, GX_TEVREG0..2, 10-bit signed) and konstant colors
+    /// (KCOLOR0..3), RGBA.
+    pub tev_colors: [[i16; 4]; 4],
     pub konst_colors: [[u8; 4]; 4],
     pub textures: Vec<TextureRef>,
     /// 0 none, 1 front, 2 back, 3 all (GX cull mode)
@@ -357,9 +363,15 @@ impl Model {
                     .collect();
                 let dl = rel(mt, be32(d, mt + 0x3c));
                 let (pixel, tev_colors, konst_colors) = parse_material_dl(d, dl);
+                let stage_count = d[mt + 0x16] as usize;
+                let shader_offset = rel(mt, be32(d, mt + 0x28));
+                let tev_stages = parse_shader(d, shader_offset, stage_count);
                 material_offsets.push(mt);
                 materials.push(Material {
                     name: mname,
+                    dl_offset: dl,
+                    shader_offset,
+                    tev_stages,
                     pixel,
                     tev_colors,
                     konst_colors,
@@ -420,11 +432,74 @@ impl Model {
     }
 }
 
+/// One TEV (texture environment) combiner stage.
+///
+/// `color_env`/`alpha_env` are the raw GX registers (BP 0xC0+2n / 0xC1+2n):
+/// `out = (d ± lerp(a, b, c) + bias) * scale`, optionally clamped, written to `dest`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TevStage {
+    pub color_env: u32,
+    pub alpha_env: u32,
+    pub tex_map: u8,
+    pub tex_coord: u8,
+    pub tex_enabled: bool,
+    /// Rasterized color channel: 0 COLOR0, 1 COLOR1, 7 zero.
+    pub channel: u8,
+    pub konst_color_sel: u8,
+    pub konst_alpha_sel: u8,
+}
+
+/// Collects the BP writes (`0x61 rr vvvvvv`) of a shader display list, honoring the
+/// 0xFE write mask, into a register file.
+fn bp_registers(d: &[u8], start: usize, end: usize) -> std::collections::HashMap<u8, u32> {
+    let mut regs = std::collections::HashMap::new();
+    let mut mask = 0x00ff_ffffu32;
+    let mut p = start;
+    while p + 5 <= end.min(d.len()) {
+        if d[p] != 0x61 {
+            p += 1;
+            continue;
+        }
+        let reg = d[p + 1];
+        let v = be32(d, p + 1) & 0x00ff_ffff;
+        p += 5;
+        if reg == 0xfe {
+            mask = v;
+            continue;
+        }
+        let old = regs.get(&reg).copied().unwrap_or(0);
+        regs.insert(reg, (old & !mask) | (v & mask));
+        mask = 0x00ff_ffff;
+    }
+    regs
+}
+
+fn parse_shader(d: &[u8], sh: usize, stage_count: usize) -> Vec<TevStage> {
+    let size = be32(d, sh) as usize;
+    let regs = bp_registers(d, sh + 0x20, sh + size.max(0x20));
+    (0..stage_count.min(16))
+        .map(|i| {
+            let order = regs.get(&(0x28 + (i / 2) as u8)).copied().unwrap_or(0) >> ((i % 2) * 12);
+            let ksel = regs.get(&(0xf6 + (i / 2) as u8)).copied().unwrap_or(0) >> ((i % 2) * 10);
+            TevStage {
+                color_env: regs.get(&(0xc0 + 2 * i as u8)).copied().unwrap_or(0),
+                alpha_env: regs.get(&(0xc1 + 2 * i as u8)).copied().unwrap_or(0),
+                tex_map: (order & 7) as u8,
+                tex_coord: ((order >> 3) & 7) as u8,
+                tex_enabled: order & 0x40 != 0,
+                channel: ((order >> 7) & 7) as u8,
+                konst_color_sel: ((ksel >> 4) & 0x1f) as u8,
+                konst_alpha_sel: ((ksel >> 9) & 0x1f) as u8,
+            }
+        })
+        .collect()
+}
+
 /// Reads the BP register writes (`0x61 rr vvvvvv`) in a material display list:
 /// 0x20 bytes of pixel-engine state followed by 0x80 bytes of TEV colors.
-fn parse_material_dl(d: &[u8], dl: usize) -> (PixelState, [[i16; 4]; 3], [[u8; 4]; 4]) {
+fn parse_material_dl(d: &[u8], dl: usize) -> (PixelState, [[i16; 4]; 4], [[u8; 4]; 4]) {
     let mut ps = PixelState::default();
-    let mut tev = [[0i16; 4]; 3];
+    let mut tev = [[0i16; 4]; 4];
     let mut konst = [[0u8; 4]; 4];
     let end = (dl + 0xa0).min(d.len());
     // BP register 0xFE sets a write mask for the next BP write; GX resets it to all-ones after use.
@@ -477,8 +552,8 @@ fn parse_material_dl(d: &[u8], dl: usize) -> (PixelState, [[i16; 4]; 3], [[u8; 4
                 if is_konst {
                     let k = &mut konst[n];
                     if is_ra { (k[0], k[3]) = (lo as u8, hi as u8) } else { (k[2], k[1]) = (lo as u8, hi as u8) }
-                } else if n >= 1 {
-                    let t = &mut tev[n - 1];
+                } else {
+                    let t = &mut tev[n];
                     if is_ra { (t[0], t[3]) = (sx(lo), sx(hi)) } else { (t[2], t[1]) = (sx(lo), sx(hi)) }
                 }
             }

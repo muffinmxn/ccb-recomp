@@ -9,3 +9,4 @@ wii-formats = { path = "../wii-formats" }
 ccb-assets = { path = "../ccb-assets" }
 anyhow = "1"
 bevy = "0.19.1"
+bytemuck = { version = "1", features = ["derive"] }

@@ -7,9 +7,11 @@ use bevy::{
     image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor},
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    render::render_resource::{Extent3d, Face, TextureDimension, TextureFormat},
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use wii_formats::{brres::{Brres, Tex0}, mdl0};
+
+use crate::gx_material::GxMaterial;
 
 /// Decodes every texture in the archives into Bevy images, keyed by texture name.
 pub fn load_textures(archives: &[&Brres], images: &mut Assets<Image>) -> HashMap<String, (Handle<Image>, [u32; 2])> {
@@ -24,7 +26,7 @@ pub fn load_textures(archives: &[&Brres], images: &mut Assets<Image>) -> HashMap
                         Extent3d { width: tex.width as u32, height: tex.height as u32, depth_or_array_layers: 1 },
                         TextureDimension::D2,
                         rgba,
-                        TextureFormat::Rgba8UnormSrgb,
+                        TextureFormat::Rgba8Unorm,
                         RenderAssetUsages::RENDER_WORLD,
                     );
                     out.insert(name.to_string(), (images.add(img), [0, 0]));
@@ -59,7 +61,8 @@ pub fn build_mesh(m: &mdl0::Mesh) -> Mesh {
         let colors: Vec<[f32; 4]> = m
             .colors
             .iter()
-            .map(|c| Color::srgba_u8(c[0], c[1], c[2], c[3]).to_linear().to_f32_array())
+            // Raw gamma-space values: the GX shader does its math in gamma space.
+            .map(|c| c.map(|v| v as f32 / 255.0))
             .collect();
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     }
@@ -68,21 +71,20 @@ pub fn build_mesh(m: &mdl0::Mesh) -> Mesh {
     mesh
 }
 
-/// Approximates a GX material with an unlit `StandardMaterial`. Returns `None` for
-/// materials that don't write color (depth/stencil masks).
+/// Builds the GX material for an MDL0 material, applying each texture layer's wrap mode.
+/// Returns `None` for materials GX would cull entirely.
 pub fn build_material(
     mat: &mdl0::Material,
     translucent: bool,
     textures: &HashMap<String, (Handle<Image>, [u32; 2])>,
     images: &mut Assets<Image>,
-) -> Option<StandardMaterial> {
-    let pe = &mat.pixel;
-    if !pe.color_update || (pe.blend && pe.src_factor == 0 && pe.dst_factor == 1) || mat.cull == 3 {
+) -> Option<GxMaterial> {
+    if mat.cull == 3 {
         return None;
     }
-    let texture = mat.textures.first().and_then(|t| {
-        let (handle, _) = textures.get(&t.texture)?;
-        // Apply the layer's wrap modes to the image sampler.
+    let mut layers = [None, None];
+    for (slot, t) in layers.iter_mut().zip(&mat.textures) {
+        let Some((handle, _)) = textures.get(&t.texture) else { continue };
         if let Some(mut img) = images.get_mut(handle) {
             img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                 address_mode_u: address_mode(t.wrap[0]),
@@ -90,27 +92,9 @@ pub fn build_material(
                 ..ImageSamplerDescriptor::linear()
             });
         }
-        Some(handle.clone())
-    });
-    let alpha_mode = if translucent && pe.blend {
-        if pe.src_factor == 1 && pe.dst_factor == 1 { AlphaMode::Add } else { AlphaMode::Blend }
-    } else if pe.alpha_test != (7, 0, 0, 7, 0) {
-        AlphaMode::Mask(0.5)
-    } else {
-        AlphaMode::Opaque
-    };
-    Some(StandardMaterial {
-        base_color_texture: texture,
-        unlit: true,
-        alpha_mode,
-        cull_mode: match mat.cull {
-            1 => Some(Face::Front),
-            2 => Some(Face::Back),
-            _ => None,
-        },
-        double_sided: mat.cull == 0,
-        ..default()
-    })
+        *slot = Some(handle.clone());
+    }
+    Some(GxMaterial::from_mdl0(mat, translucent, layers))
 }
 
 /// Per-bone entities of a spawned model, used by the animator.
@@ -128,7 +112,13 @@ pub fn bone_transform(s: [f32; 3], r_deg: [f32; 3], t: [f32; 3]) -> Transform {
     Transform { translation: Vec3::from(t), rotation: r, scale: Vec3::from(s) }
 }
 
+/// A `tweak` that keeps every mesh unchanged.
+pub fn no_tweak(_: &mdl0::Mesh, _: &str, _: &mut GxMaterial) -> bool {
+    true
+}
+
 /// Spawns a model under `parent`: one entity per bone (in hierarchy) and one per mesh.
+/// `tweak` can adjust each mesh's material (or return false to skip the mesh).
 /// Meshes bound rigidly to a single bone are parented to it so bone animation moves them.
 pub fn spawn_model(
     commands: &mut Commands,
@@ -136,8 +126,9 @@ pub fn spawn_model(
     model: &mdl0::Model,
     textures: &HashMap<String, (Handle<Image>, [u32; 2])>,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<GxMaterial>,
     images: &mut Assets<Image>,
+    tweak: &dyn Fn(&mdl0::Mesh, &str, &mut GxMaterial) -> bool,
 ) -> Entity {
     let root = commands
         .spawn((Name::new(model.name.clone()), Transform::default(), Visibility::default()))
@@ -158,7 +149,10 @@ pub fn spawn_model(
     }
     for m in &model.meshes {
         let Some(mat) = model.materials.get(m.material) else { continue };
-        let Some(material) = build_material(mat, m.translucent, textures, images) else { continue };
+        let Some(mut material) = build_material(mat, m.translucent, textures, images) else { continue };
+        if !tweak(m, &mat.name, &mut material) {
+            continue;
+        }
         let (owner, mesh) = match &m.rigid {
             Some((bone, pos, nrm)) => {
                 let local = mdl0::Mesh { positions: pos.clone(), normals: nrm.clone(), ..m.clone() };
