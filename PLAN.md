@@ -57,7 +57,10 @@ docs/            per-subsystem reverse-engineering notes
 - [x] **M2 Models.** BRRES MDL0 → meshes (vertex arrays, display lists, materials, pixel-engine state); every model in the game parses. `ccb-tools render` draws them on the CPU for checking.
   - [x] CHR0 bone animations (all 216 parse; Hermite I4/I6/I12 + linear tables).
   - [x] TEV stages → one WGSL uber-shader (`gx.wgsl`) that evaluates each material's combiner stages, konst colors, alpha test, blend/cull/depth state, in gamma space like the Wii.
-  - [ ] CLR0/SRT0/VIS0/PAT0 animations; TEV swap tables; lighting channels (currently vertex color or white).
+  - [x] VIS0 bone visibility + bone visibility flags (fixes double chick faces, overlapping weight variants, plant parts).
+  - [x] Environment-mapped texture layers (effect-matrix map mode 1: chick/bomb/plant shading).
+  - [ ] CLR0/SRT0/PAT0 animations; TEV swap tables; lighting channels (currently vertex color or white);
+        the bomb's stripe-mask texgen (stripes render mostly black); >2 texture layers per material.
 - [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
   - [x] Level scene loads from `levels.cfg`, camera from `view.cfg`, bone hierarchy + intro animation, level music, headless screenshots.
   - [x] Sky dome + horizon from `common.brres` (its fade stage is runtime-driven; zeroed for play). City, ship and graveyard all render.

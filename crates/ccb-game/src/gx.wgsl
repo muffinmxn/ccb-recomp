@@ -3,9 +3,10 @@
 // All math happens in gamma space like on the Wii; the result is linearized at the end.
 
 #import bevy_pbr::forward_io::VertexOutput
+#import bevy_pbr::mesh_view_bindings::view
 
 struct GxParams {
-    // x: stage count, y: packed alpha test, z: bit0 has tex0, bit1 has tex1
+    // x: stage count, y: packed alpha test, z: bit0/bit1 = tex0/tex1 use environment mapping
     info: vec4<u32>,
     color_env: array<vec4<u32>, 4>,
     alpha_env: array<vec4<u32>, 4>,
@@ -94,9 +95,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_COLORS
     ras = in.color;
 #endif
+    // Environment-mapped layers (NW4R env camera) look up by the view-space normal.
+    var env_uv = uv;
+#ifdef VERTEX_NORMALS
+    let vn = normalize((view.view_from_world * vec4(normalize(in.world_normal), 0.0)).xyz);
+    env_uv = vn.xy * vec2(0.5, -0.5) + 0.5;
+#endif
+    let uv0 = select(uv, env_uv, (gx.info.z & 1u) != 0u);
+    let uv1 = select(uv, env_uv, (gx.info.z & 2u) != 0u);
     // Sample up front: sampling must happen in uniform control flow.
-    let t0 = textureSample(tex0, samp0, uv);
-    let t1 = textureSample(tex1, samp1, uv);
+    let t0 = textureSample(tex0, samp0, uv0);
+    let t1 = textureSample(tex1, samp1, uv1);
 
     var r = gx.regs;
     var out_c = r[0].rgb;

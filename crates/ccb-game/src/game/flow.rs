@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use bevy::prelude::*;
-use wii_formats::{brres::Brres, chr0::Chr0, mdl0::Model};
+use wii_formats::{brres::Brres, mdl0::Model};
 
 use super::{
     ai::Cpu,
@@ -17,7 +17,7 @@ use super::{
     AttackKind, Team,
 };
 use crate::{
-    anim::BoneAnimator,
+    anim::{BoneAnimator, Clip},
     data::GameData,
     g3d,
     gx_material::GxMaterial,
@@ -88,7 +88,7 @@ pub struct GameAssets {
     models: HashMap<String, Model>,
     widths: HashMap<String, f32>,
     textures: HashMap<String, (Handle<Image>, [u32; 2])>,
-    clips: Vec<Arc<Chr0>>,
+    clips: Vec<Arc<Clip>>,
     root: Entity,
 }
 
@@ -249,9 +249,9 @@ pub fn start_match(
         let theme_bytes = data.brres(&theme_name)?.to_vec();
         let theme = Brres::parse(&theme_bytes)?;
         let textures = g3d::load_textures(&[&common, &theme], &mut images);
-        let clips: Vec<Arc<Chr0>> = common.bone_animations()?.into_iter().map(Arc::new).collect();
+        let clips = crate::anim::load_clips(&common)?;
         let mut models = HashMap::new();
-        for name in ["bomb", "weight", "explosion", "cloud", "plant"] {
+        for name in ["bomb", "weight", "explosion", "cloud", "cloudLightning", "plant"] {
             if let Ok(m) = common.model(name) {
                 models.insert(name.to_string(), m);
             }
@@ -346,18 +346,32 @@ pub fn showcase(
     }
     *done = true;
     let z = tuning.plane_z;
+    // `CCB_SHOWCASE=<model>[:clip]` shows one model up close instead.
+    let arg = std::env::var("CCB_SHOWCASE").unwrap_or_default();
+    if arg != "1" {
+        let (name, clip) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+        let e = if clip.is_empty() {
+            assets.spawn(&mut commands, name, Team::Yellow, 7.0, &mut meshes, &mut materials, &mut images)
+        } else {
+            assets.spawn_posed(&mut commands, name, clip, Team::Yellow, 7.0, &mut meshes, &mut materials, &mut images)
+        };
+        commands.entity(e).insert(Transform::from_xyz(0.0, 4.0, z + 8.0).with_scale(Vec3::splat(assets.scale(name, 7.0))));
+        return;
+    }
     fn place(commands: &mut Commands, assets: &GameAssets, e: Entity, name: &str, p: Vec3, w: f32) {
         commands.entity(e).insert(Transform::from_translation(p).with_scale(Vec3::splat(assets.scale(name, w))));
     }
-    let e = assets.spawn(&mut commands, "bomb", Team::Yellow, 1.4, &mut meshes, &mut materials, &mut images);
-    place(&mut commands, &assets, e, "bomb", Vec3::new(-8.0, 3.0, z), 1.4);
-    let e = assets.spawn(&mut commands, "bomb", Team::Black, 1.4, &mut meshes, &mut materials, &mut images);
-    place(&mut commands, &assets, e, "bomb", Vec3::new(-6.0, 3.0, z), 1.4);
+    let e = assets.spawn_posed(&mut commands, "bomb", "bomb__fly", Team::Yellow, 1.4, &mut meshes, &mut materials, &mut images);
+    place(&mut commands, &assets, e, "bomb", Vec3::new(-8.0, 3.5, z), 3.5);
+    let e = assets.spawn_posed(&mut commands, "bomb", "bomb__roll", Team::Black, 1.4, &mut meshes, &mut materials, &mut images);
+    place(&mut commands, &assets, e, "bomb", Vec3::new(-4.5, 3.5, z), 3.5);
     let e = assets.spawn_weight(&mut commands, 3, Team::Yellow, 3.6, &mut meshes, &mut materials, &mut images);
     place(&mut commands, &assets, e, "weight", Vec3::new(-3.0, 3.5, z), 3.6);
-    let e = assets.spawn(&mut commands, "cloud", Team::Yellow, 3.2, &mut meshes, &mut materials, &mut images);
-    place(&mut commands, &assets, e, "cloud", Vec3::new(2.0, tuning.cloud_y, z), 3.2);
-    let e = assets.spawn_posed(&mut commands, "plant", "plant__default", Team::Yellow, 2.4, &mut meshes, &mut materials, &mut images);
+    let e = assets.spawn(&mut commands, "cloud", Team::Yellow, 5.0, &mut meshes, &mut materials, &mut images);
+    place(&mut commands, &assets, e, "cloud", Vec3::new(2.0, tuning.cloud_y, z), 5.0);
+    let e = assets.spawn_posed(&mut commands, "cloudLightning", "cloudLightning__spratzel", Team::Yellow, 5.0, &mut meshes, &mut materials, &mut images);
+    place(&mut commands, &assets, e, "cloudLightning", Vec3::new(2.0, tuning.cloud_y, z + 0.2), 5.0);
+    let e = assets.spawn_posed(&mut commands, "plant", "plant__intro", Team::Yellow, 2.4, &mut meshes, &mut materials, &mut images);
     place(&mut commands, &assets, e, "plant", Vec3::new(5.0, 1.6, z), 2.4);
     let e = assets.spawn(&mut commands, "explosion", Team::Yellow, 5.0, &mut meshes, &mut materials, &mut images);
     place(&mut commands, &assets, e, "explosion", Vec3::new(8.5, 2.0, z), 5.0);
@@ -497,7 +511,6 @@ pub fn player_attack_buttons(
 #[allow(clippy::too_many_arguments)]
 pub fn update_hud(
     mut m: ResMut<Match>,
-    tuning: Res<Tuning>,
     data: Res<GameData>,
     lyt: Res<LayoutAssets>,
     chicks: Query<&Chick>,

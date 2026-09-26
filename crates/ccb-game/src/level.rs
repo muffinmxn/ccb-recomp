@@ -1,7 +1,5 @@
 //! Loads a level as described by `cfg/levels.cfg` and sets up camera and music.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use bevy::{audio::AudioSource, core_pipeline::tonemapping::Tonemapping, prelude::*};
 use wii_formats::brres::Brres;
@@ -54,7 +52,7 @@ pub fn spawn_level(
         let scene = data.brres(&def.level_brres)?.to_vec();
         let (common, theme, scene) = (Brres::parse(&common)?, Brres::parse(&theme)?, Brres::parse(&scene)?);
         let textures = g3d::load_textures(&[&common, &theme, &scene], &mut images);
-        let clips: Vec<Arc<wii_formats::chr0::Chr0>> = scene.bone_animations()?.into_iter().map(Arc::new).collect();
+        let clips = crate::anim::load_clips(&scene)?;
         let clip = |name: &str| clips.iter().find(|c| c.name == name).cloned();
 
         let root = commands

@@ -6,10 +6,20 @@ fn main() -> anyhow::Result<()> {
     let b = wii_formats::brres::Brres::parse(&data)?;
     let m = b.model(&a[2])?;
     for (i, bone) in m.bones.iter().enumerate() {
-        println!("bone {i} {} parent {:?} billboard {} s {:?} r {:?} t {:?}\n  world {:?}", bone.name, bone.parent, bone.billboard, bone.scale, bone.rotation, bone.translation, bone.world);
+        println!("bone {i} {} parent {:?} flags {:#x} billboard {} s {:?}", bone.name, bone.parent, bone.flags, bone.billboard, bone.scale);
     }
     for mat in &m.materials {
         println!("material {} cull {} xlu {} {:?}\n  {:?}\n  tev {:?} konst {:?}", mat.name, mat.cull, mat.translucent, mat.textures, mat.pixel, mat.tev_colors, mat.konst_colors);
+        if std::env::var("MATDUMP").is_ok_and(|n| n == mat.name) {
+            // Material struct words from 0x40 to 0x420, as hex and float.
+            for off in (0x40..0x420).step_by(4) {
+                let w = u32::from_be_bytes(data[mat.offset + off..mat.offset + off + 4].try_into().unwrap());
+                let f = f32::from_bits(w);
+                if w != 0 {
+                    println!("  +{off:#05x} {w:08x} {}", if f.abs() > 1e-4 && f.abs() < 1e4 { format!("{f}") } else { String::new() });
+                }
+            }
+        }
         if std::env::var("BP").is_ok() {
             for (label, start, len) in [("material", mat.dl_offset, 0x180), ("shader", mat.shader_offset + 0x20, 0x1e0)] {
                 let mut p = start;

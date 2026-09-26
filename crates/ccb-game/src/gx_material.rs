@@ -129,7 +129,8 @@ impl Material for GxMaterial {
 }
 
 impl GxMaterial {
-    pub fn from_mdl0(mat: &mdl0::Material, translucent: bool, textures: [Option<Handle<Image>>; 2]) -> Self {
+    /// `env` flags the texture slots that use environment mapping.
+    pub fn from_mdl0(mat: &mdl0::Material, translucent: bool, textures: [Option<Handle<Image>>; 2], env: [bool; 2]) -> Self {
         let pe = &mat.pixel;
         let mut p = GxParams::default();
         let n = mat.tev_stages.len().min(16);
@@ -137,7 +138,7 @@ impl GxMaterial {
         p.info = UVec4::new(
             n as u32,
             at0 as u32 | (at1 as u32) << 3 | (op as u32) << 6 | (ref0 as u32) << 8 | (ref1 as u32) << 16,
-            0,
+            env[0] as u32 | (env[1] as u32) << 1,
             0,
         );
         for (i, st) in mat.tev_stages.iter().take(16).enumerate() {

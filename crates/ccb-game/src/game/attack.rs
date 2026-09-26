@@ -50,11 +50,12 @@ pub struct Attack {
     pub target_x: f32,
     visual: Option<Entity>,
     effect: Option<Entity>,
+    flash: Option<Entity>,
 }
 
 impl Attack {
     pub fn new(kind: AttackKind, from: Team, quality: f32, target_x: f32) -> Self {
-        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None }
+        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None }
     }
 
     pub fn target(&self) -> Team {
@@ -126,7 +127,7 @@ pub fn update_attacks(
                     let t = BOMB_FLIGHT_TIME;
                     a.pos = start;
                     a.vel = Vec2::new((tx - start.x) / t, (BOMB_RADIUS - start.y + 0.5 * BOMB_GRAVITY * t * t) / t);
-                    a.visual = Some(assets.spawn(&mut commands, "bomb", a.from, BOMB_RADIUS * 2.0, &mut meshes, &mut materials, &mut images));
+                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, BOMB_RADIUS * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
@@ -149,6 +150,9 @@ pub fn update_attacks(
                 if a.pos.y <= BOMB_RADIUS {
                     a.pos.y = BOMB_RADIUS;
                     a.vel = Vec2::new(a.vel.x * 0.4, 0.0);
+                    if let Some(v) = a.visual {
+                        assets.play(&mut commands, v, "bomb__roll");
+                    }
                     a.state = AttackState::Roll;
                     a.t = 0.0;
                 }
@@ -255,6 +259,10 @@ pub fn update_attacks(
                         let dmg = tuning.bomb_damage.damage(a.quality);
                         damage_chicks(&mut chicks, Vec2::new(x, 0.8), STRIKE_RADIUS, STRIKE_RADIUS * 0.6, dmg, 2.0, false);
                     }
+                    // The strike flash on the cloud.
+                    let flash = assets.spawn_posed(&mut commands, "cloudLightning", "cloudLightning__spratzel", a.from, 5.0, &mut meshes, &mut materials, &mut images);
+                    commands.entity(flash).insert(Transform::from_xyz(x, tuning.cloud_y, z + 0.2).with_scale(Vec3::splat(assets.scale("cloudLightning", 5.0))));
+                    a.flash = Some(flash);
                     a.effect = Some(assets.spawn_bolt(&mut commands, x, bottom, tuning.cloud_y - 0.6, z, &mut meshes, &mut materials));
                     a.state = if blocked { AttackState::Blocked } else { AttackState::Impact };
                     a.t = 0.0;
@@ -277,7 +285,7 @@ pub fn update_attacks(
                 // A mound telegraphs where the plant will come up.
                 if a.t >= tuning.attack_prepare_time {
                     a.pos = Vec2::new(a.target_x, -PLANT_HEIGHT);
-                    a.visual = Some(assets.spawn_posed(&mut commands, "plant", "plant__default", a.from, 2.4, &mut meshes, &mut materials, &mut images));
+                    a.visual = Some(assets.spawn_posed(&mut commands, "plant", "plant__intro", a.from, 2.4, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
@@ -341,7 +349,7 @@ pub fn update_attacks(
                 }
             }
             (_, AttackState::Finished) => {
-                for v in [a.visual.take(), a.effect.take()].into_iter().flatten() {
+                for v in [a.visual.take(), a.effect.take(), a.flash.take()].into_iter().flatten() {
                     commands.entity(v).despawn();
                 }
                 commands.entity(e).despawn();

@@ -73,6 +73,16 @@ impl<'a> Brres<'a> {
             .collect()
     }
 
+    /// Parses every VIS0 bone visibility animation in the archive.
+    pub fn vis_animations(&self) -> Result<Vec<crate::vis0::Vis0>> {
+        self.files
+            .iter()
+            .zip(&self.offsets)
+            .filter(|(f, _)| f.0 == "AnmVis(NW4R)")
+            .map(|(f, &o)| crate::vis0::Vis0::parse(self.data, o).with_context(|| f.1.clone()))
+            .collect()
+    }
+
     pub fn folder<'s>(&'s self, folder: &'s str) -> impl Iterator<Item = (&'s str, &'a [u8])> + 's {
         self.files.iter().filter(move |f| f.0 == folder).map(|f| (f.1.as_str(), f.2))
     }

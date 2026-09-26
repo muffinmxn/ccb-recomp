@@ -11,6 +11,7 @@ pub mod mdl0;
 pub mod rfnt;
 pub mod tpl;
 pub mod u8arc;
+pub mod vis0;
 pub mod wad;
 
 pub(crate) fn be16(b: &[u8], o: usize) -> u16 {

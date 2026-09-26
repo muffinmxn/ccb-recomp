@@ -39,12 +39,19 @@ pub struct Bone {
     pub world: Mtx34,
     /// Billboard mode (0 = none).
     pub billboard: u32,
+    /// Raw bone flags (0x100 = visible).
+    pub flags: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct TextureRef {
     pub texture: String,
     pub palette: String,
+    /// GX texture map slot this layer is bound to.
+    pub map_id: u32,
+    /// Texture-coordinate map mode from the layer's effect matrix: 0 = mesh UVs,
+    /// 1 = environment (camera), 2 = projection, 3 = environment (light), 4 = specular.
+    pub map_mode: u8,
     /// 0 clamp, 1 repeat, 2 mirror
     pub wrap: [u32; 2],
 }
@@ -112,7 +119,8 @@ impl PixelState {
 #[derive(Debug, Clone)]
 pub struct Material {
     pub name: String,
-    /// Absolute offsets of the material's display list and shader (for debugging).
+    /// Absolute offsets of the material struct, its display list and shader (for debugging).
+    pub offset: usize,
     pub dl_offset: usize,
     pub shader_offset: usize,
     /// Active TEV stages, in order.
@@ -278,6 +286,7 @@ impl Model {
                     translation: v3(b + 0x38),
                     world,
                     billboard: be32(d, b + 0x18),
+                    flags: be32(d, b + 0x14),
                 });
             }
             for (i, &b) in bone_offsets.iter().enumerate() {
@@ -357,6 +366,9 @@ impl Model {
                         TextureRef {
                             texture: name_at(0),
                             palette: name_at(4),
+                            map_id: be32(d, l + 0x10),
+                            // Effect matrices follow the 8 texture SRTs at +0x1A8.
+                            map_mode: d.get(mt + 0x250 + i * 0x34 + 2).copied().unwrap_or(0),
                             wrap: [be32(d, l + 0x18), be32(d, l + 0x1c)],
                         }
                     })
@@ -369,6 +381,7 @@ impl Model {
                 material_offsets.push(mt);
                 materials.push(Material {
                     name: mname,
+                    offset: mt,
                     dl_offset: dl,
                     shader_offset,
                     tev_stages,

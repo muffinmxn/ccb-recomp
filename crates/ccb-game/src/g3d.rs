@@ -83,6 +83,10 @@ pub fn build_material(
         return None;
     }
     let mut layers = [None, None];
+    let mut env = [false; 2];
+    for (i, t) in mat.textures.iter().enumerate().take(2) {
+        env[i] = t.map_mode == 1;
+    }
     for (slot, t) in layers.iter_mut().zip(&mat.textures) {
         let Some((handle, _)) = textures.get(&t.texture) else { continue };
         if let Some(mut img) = images.get_mut(handle) {
@@ -94,7 +98,7 @@ pub fn build_material(
         }
         *slot = Some(handle.clone());
     }
-    Some(GxMaterial::from_mdl0(mat, translucent, layers))
+    Some(GxMaterial::from_mdl0(mat, translucent, layers, env))
 }
 
 /// Per-bone entities of a spawned model, used by the animator.
@@ -104,6 +108,10 @@ pub struct ModelInstance {
     pub bones: Vec<Entity>,
     /// Bind-pose (scale, rotation in degrees, translation) per bone.
     pub bind: Vec<[[f32; 3]; 3]>,
+    /// Per-bone visibility (bone flag 0x100, then driven by VIS0 clips).
+    pub bone_visible: Vec<bool>,
+    /// (draw bone, mesh entity) for every spawned mesh.
+    pub meshes: Vec<(usize, Entity)>,
 }
 
 pub fn bone_transform(s: [f32; 3], r_deg: [f32; 3], t: [f32; 3]) -> Transform {
@@ -147,6 +155,8 @@ pub fn spawn_model(
         let p = b.parent.map_or(root, |p| bones[p]);
         commands.entity(p).add_child(bones[i]);
     }
+    let bone_visible: Vec<bool> = model.bones.iter().map(|b| b.flags & 0x100 != 0).collect();
+    let mut mesh_entities = Vec::new();
     for m in &model.meshes {
         let Some(mat) = model.materials.get(m.material) else { continue };
         let Some(mut material) = build_material(mat, m.translucent, textures, images) else { continue };
@@ -160,20 +170,25 @@ pub fn spawn_model(
             }
             None => (root, build_mesh(m)),
         };
+        let visible = bone_visible.get(m.bone).copied().unwrap_or(true);
         let child = commands
             .spawn((
                 Name::new(format!("{}/{}", model.name, m.name)),
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(materials.add(material)),
                 Transform::default(),
+                if visible { Visibility::Inherited } else { Visibility::Hidden },
             ))
             .id();
         commands.entity(owner).add_child(child);
+        mesh_entities.push((m.bone, child));
     }
     commands.entity(root).insert(ModelInstance {
         bone_names: model.bones.iter().map(|b| b.name.clone()).collect(),
         bones,
         bind: model.bones.iter().map(|b| [b.scale, b.rotation, b.translation]).collect(),
+        bone_visible,
+        meshes: mesh_entities,
     });
     root
 }

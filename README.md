@@ -41,7 +41,7 @@ PLAY starts a duel against the CPU on the city level:
   (roofs for weights and lightning, lids for plants, angled walls for bombs).
 
 Debug knobs: `CCB_AUTOPLAY=1` (CPU plays both sides), `CCB_SHOWCASE=1` (places every attack
-model on the field), `RUST_LOG=ccb_game::game=debug` (attack/barrier timeline).
+model on the field; `CCB_SHOWCASE=bomb:bomb__fly` shows one model and clip up close), `RUST_LOG=ccb_game::game=debug` (attack/barrier timeline).
 `--screenshot out.png` renders 30 frames (`CCB_SHOT_FRAME=N` to change), saves a screenshot and exits (works headless
 under `xvfb-run` with Mesa's software Vulkan driver).
 
@@ -49,7 +49,7 @@ under `xvfb-run` with Mesa's software Vulkan driver).
 
 | Crate | Purpose |
 |---|---|
-| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0, TEX0, CHR0), BRLYT/BRLAN layouts, BRFNT fonts, all GX texture formats |
+| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0, TEX0, CHR0, VIS0), BRLYT/BRLAN layouts, BRFNT fonts, all GX texture formats |
 | `ccb-extract` | WAD → `extracted/` |
 | `ccb-assets` | the game's `cfg` tuning files and `msgs` string tables |
 | `ccb-tools` | developer dump tools |
