@@ -8,5 +8,9 @@ license.workspace = true
 wii-formats = { path = "../wii-formats" }
 ccb-assets = { path = "../ccb-assets" }
 anyhow = "1"
-bevy = { version = "0.19.1", features = ["wav"] }
+# Only the Bevy parts the game uses (windowing, 3D rendering, audio): far fewer crates to build.
+bevy = { version = "0.19.1", default-features = false, features = [
+    "default_app", "std", "multi_threaded", "bevy_winit", "x11", "wayland",
+    "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_audio", "vorbis", "wav", "png",
+] }
 bytemuck = { version = "1", features = ["derive"] }
