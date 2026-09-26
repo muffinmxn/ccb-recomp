@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 
 use super::{
-    attack::Attack,
+    attack::{Attack, AttackState},
     chick::Chick,
     flow::{GameAssets, Match, Phase},
     rng::Rng,
@@ -34,7 +34,12 @@ pub struct EnvEvent {
     pub vel: f32,
     pub appear: f32,
     pub visual: Option<Entity>,
+    /// A raining cloud (`cloudRainChance`) and its rain streaks.
+    pub rain: Option<Entity>,
 }
+
+#[derive(Component)]
+pub struct RainDrop;
 
 #[derive(Resource, Default)]
 pub struct Env {
@@ -71,6 +76,8 @@ pub fn update_env(
     mut m: ResMut<Match>,
     mut rng: ResMut<Rng>,
     chicks: Query<&Chick>,
+    mut attacks: Query<&mut Attack>,
+    mut drops: Query<&mut Transform, (With<RainDrop>, Without<Chick>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -78,12 +85,18 @@ pub fn update_env(
 ) {
     let dt = time.delta_secs();
     let sp = &tuning.sp;
+    for mut t in &mut drops {
+        t.translation.y -= dt * 12.0;
+        if t.translation.y < -tuning.cloud_y {
+            t.translation.y += tuning.cloud_y - 0.5;
+        }
+    }
     let z = tuning.plane_z;
     let running = !matches!(m.phase, Phase::Spin(_) | Phase::GameOver(_) | Phase::RoundOver(_));
     if !running {
         // Rounds end: the sky clears.
         if let Some(ev) = env.event.take() {
-            if let Some(v) = ev.visual {
+            for v in [ev.visual, ev.rain].into_iter().flatten() {
                 commands.entity(v).despawn();
             }
         }
@@ -131,7 +144,34 @@ pub fn update_env(
                     _ => "SFX_ATTACKS_GHOST_APPEAR",
                 });
                 info!("environment: {kind:?}");
-                env.event = Some(EnvEvent { kind, phase: EnvPhase::Appear, t: 0.0, pos, vel, appear, visual: Some(visual) });
+                let rain = (kind == AttackKind::Lightning && rng.chance(sp.cloud_rain_chance)).then(|| {
+                    sfx.play("SFX_ENV_RAIN");
+                    let mut mat = super::barrier::solid_material(Vec4::new(0.55, 0.75, 1.0, 0.5));
+                    mat.params.konst[3].w = 0.5;
+                    let material = materials.add(mat);
+                    let streak = meshes.add(Rectangle::new(0.05, 0.6));
+                    commands
+                        .spawn((Transform::from_translation(pos), Visibility::default(), DespawnOnExit(Screen::Level)))
+                        .with_children(|p| {
+                            for i in 0..14 {
+                                p.spawn((Mesh3d(streak.clone()), MeshMaterial3d(material.clone()), Transform::from_xyz((i as f32 / 13.0 - 0.5) * 3.6, -(i * 7 % 13) as f32 * 0.5, 0.8), RainDrop));
+                            }
+                        })
+                        .id()
+                });
+                env.event = Some(EnvEvent { kind, phase: EnvPhase::Appear, t: 0.0, pos, vel, appear, visual: Some(visual), rain });
+            }
+        }
+    }
+    // Rain falls under a raining cloud and puts out bombs there (`bombCloudRainDistance`).
+    if let Some(ev) = env.event.as_ref() {
+        if let Some(r) = ev.rain {
+            commands.entity(r).insert(Transform::from_translation(ev.pos));
+            for mut a in &mut attacks {
+                if a.kind == AttackKind::Bomb && matches!(a.state, AttackState::Roll) && (a.pos.x - ev.pos.x).abs() < 1.8 + tuning.bomb_rain_distance {
+                    a.state = AttackState::Finished;
+                    sfx.play("SFX_ATTACKS_BOMB_DEFUSED");
+                }
             }
         }
     }
@@ -200,7 +240,7 @@ pub fn update_env(
             }
         }
         EnvPhase::Leave if ev.t >= sp.ufo_disappear => {
-            if let Some(v) = ev.visual.take() {
+            for v in [ev.visual.take(), ev.rain.take()].into_iter().flatten() {
                 commands.entity(v).despawn();
             }
             env.event = None;
@@ -232,7 +272,7 @@ pub fn update_env(
         let aim = rng.pick(&xs).unwrap_or((lo + hi) / 2.0);
         let tx = if kind == AttackKind::Lightning { ev.pos.x } else { (aim + (1.0 - quality) * 2.0 * (rng.f32() * 2.0 - 1.0)).clamp(lo, hi) };
         info!("{from:?} wins the {kind:?} race against {target:?}");
-        if let Some(v) = ev.visual {
+        for v in [ev.visual, ev.rain].into_iter().flatten() {
             commands.entity(v).despawn();
         }
         commands.spawn((Attack::new(kind, from, quality, tx).against(target).from_origin(ev.pos), DespawnOnExit(Screen::Level)));
