@@ -8,8 +8,9 @@
 //!   files/NNNN/...       unpacked U8 archives
 //! ```
 //!
-//! The Wii common key is not shipped. Supply it via `--key <file>` (16 raw bytes or
-//! 32 hex chars), `WII_COMMON_KEY` (hex), or `keys/common-key.bin`.
+//! The Wii common key is not shipped. Supply it via `--key <file or 32 hex chars>`,
+//! `WII_COMMON_KEY` (hex), or `keys/common-key.bin`. A key that works is saved to
+//! `keys/common-key.bin` (gitignored) so later runs don't need it again.
 
 use std::{fmt::Write as _, fs, path::PathBuf};
 
@@ -18,7 +19,13 @@ use wii_formats::{dol::Dol, lz, u8arc, wad::Wad};
 
 fn load_key(explicit: Option<PathBuf>) -> Result<[u8; 16]> {
     let raw = if let Some(p) = explicit {
-        fs::read(&p).with_context(|| format!("reading {}", p.display()))?
+        // A path to a key file, or the key itself as 32 hex characters.
+        let text = p.to_string_lossy().to_string();
+        if !p.exists() && text.chars().filter(|c| c.is_ascii_hexdigit()).count() == 32 {
+            text.into_bytes()
+        } else {
+            fs::read(&p).with_context(|| format!("reading {}", p.display()))?
+        }
     } else if let Ok(hex) = std::env::var("WII_COMMON_KEY") {
         hex.into_bytes()
     } else if let Ok(b) = fs::read("keys/common-key.bin") {
@@ -53,7 +60,12 @@ fn main() -> Result<()> {
     let wad_path = wad_path.context("usage: ccb-extract <game.wad> [-o extracted] [--key common-key.bin]")?;
     let bytes = fs::read(&wad_path).with_context(|| format!("reading {}", wad_path.display()))?;
     let wad = Wad::parse(&bytes)?;
-    let contents = wad.decrypt_contents(&wad.title_key(&load_key(key)?)?)?;
+    let common = load_key(key)?;
+    let contents = wad.decrypt_contents(&wad.title_key(&common)?)?;
+    // Remember a key that worked (it's gitignored, never committed).
+    if fs::metadata("keys/common-key.bin").is_err() {
+        let _ = fs::create_dir_all("keys").and_then(|_| fs::write("keys/common-key.bin", common));
+    }
 
     fs::create_dir_all(out.join("contents"))?;
     let mut summary = String::new();
