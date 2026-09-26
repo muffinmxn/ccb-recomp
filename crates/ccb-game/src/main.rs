@@ -33,6 +33,23 @@ pub enum Screen {
     Level,
 }
 
+/// Each team's hat (index into `game::chick::HATS`), picked on the team screen.
+/// `CCB_HATS=a,b` overrides it (for testing).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct Teams {
+    pub hat: [usize; 2],
+}
+
+impl Default for Teams {
+    fn default() -> Self {
+        let env = std::env::var("CCB_HATS").ok().and_then(|v| {
+            let (a, b) = v.split_once(',')?;
+            Some([a.parse().ok()?, b.parse().ok()?])
+        });
+        Self { hat: env.unwrap_or([0, 2]) }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct Options {
     pub data_dir: std::path::PathBuf,
@@ -90,6 +107,7 @@ fn main() -> AppExit {
     .insert_resource(ClearColor(Color::WHITE))
     .insert_resource(game_data)
     .insert_resource(layouts)
+    .init_resource::<Teams>()
     .insert_state(if opts.level.is_some() {
         Screen::Level
     } else if opts.start_arenas {

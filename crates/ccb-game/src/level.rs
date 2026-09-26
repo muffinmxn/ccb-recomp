@@ -43,6 +43,7 @@ pub fn spawn_level(
     mut images: ResMut<Assets<Image>>,
     mut audio: ResMut<Assets<AudioSource>>,
     mut lyt: ResMut<crate::layout::LayoutAssets>,
+    teams: Res<crate::Teams>,
 ) {
     let level = opts.level.clone().unwrap_or_else(|| "city.1".into());
     let result: Result<()> = (|| {
@@ -77,9 +78,12 @@ pub fn spawn_level(
         commands.entity(cam).insert((DespawnOnExit(crate::Screen::Level), crate::game::WorldCamera));
 
         // HUD: team names are the teams' hat names ("CHICK GANG" is the default hat).
-        let team = crate::layout::display_text(data.msgs.get("CCB_HAT_NAKED").unwrap_or("CHICK GANG"));
+        let name = |t: usize| {
+            let key = crate::game::chick::HATS.get(teams.hat[t]).map_or("CCB_HAT_NAKED", |h| h.1);
+            crate::layout::display_text(data.msgs.get(key).unwrap_or("CHICK GANG"))
+        };
         let hud_texts = crate::layout::TextSetup {
-            strings: [("tbTeamName0", team.clone()), ("tbTeamName1", team), ("txtCountdown", String::new()), ("txtBgCountdown", String::new())]
+            strings: [("tbTeamName0", name(0)), ("tbTeamName1", name(1)), ("txtCountdown", String::new()), ("txtBgCountdown", String::new())]
                 .into_iter()
                 .collect(),
             color: None,

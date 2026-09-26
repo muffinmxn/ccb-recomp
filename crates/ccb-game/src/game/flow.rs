@@ -372,6 +372,7 @@ pub fn start_match(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    teams: Res<crate::Teams>,
 ) {
     let r: Result<()> = (|| {
         let tuning = Tuning::load(&data)?;
@@ -411,7 +412,15 @@ pub fn start_match(
             .map(|(n, m)| (n.clone(), if n == "tentacle" { model_extent(m, 1) } else { model_extent(m, 0) }))
             .collect();
         let root = commands.spawn((Name::new("gameplay"), Transform::default(), Visibility::default(), DespawnOnExit(Screen::Level))).id();
-        let chick_assets = ChickAssets::new(common.model("chick")?, textures.clone());
+        let mut chick_assets = ChickAssets::new(common.model("chick")?, textures.clone());
+        for (hat, _) in super::chick::HATS {
+            for name in [hat.to_string(), format!("{hat}_s")] {
+                if let Ok(m) = common.model(&name) {
+                    chick_assets.hats.insert(name, m);
+                }
+            }
+        }
+        chick_assets.team_hat = teams.hat;
 
         spawn_teams(&mut commands, root, &chick_assets, &tuning, &mut rng, &mut meshes, &mut materials, &mut images);
 

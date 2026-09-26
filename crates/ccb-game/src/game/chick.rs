@@ -89,12 +89,78 @@ impl Chick {
     }
 }
 
+/// The teams' hats, in the game's order: (model, name message). A team is named after its
+/// hat; the general wears the big version, the other chicks `<model>_s`.
+pub const HATS: [(&str, &str); 15] = [
+    ("hatNaked", "CCB_HAT_NAKED"),
+    ("hatCoxcomb", "CCB_HAT_COXCOMB"),
+    ("hatPirate", "CCB_HAT_PIRATE"),
+    ("hatChickinger", "CCB_HAT_CHICKINGER"),
+    ("hatGentleman", "CCB_HAT_GENTLEMAN"),
+    ("hatHG", "CCB_HAT_HG"),
+    ("hatBruno", "CCB_HAT_BRUNO"),
+    ("hatMushroom", "CCB_HAT_MUSHROOM"),
+    ("hatParty", "CCB_HAT_PARTY"),
+    ("hatChickencurry", "CCB_HAT_CHICKENCURRY"),
+    ("hatSittingchick", "CCB_HAT_SITTINGCHICK"),
+    ("hatWild", "CCB_HAT_WILD"),
+    ("hatSweets", "CCB_HAT_SWEETS"),
+    ("hatInsect", "CCB_HAT_INSECT"),
+    ("hatMephisthuhn", "CCB_HAT_MEPHISTHUHN"),
+];
+
+/// Where a hat sits on the chick model (its base, in chick model units) and its size.
+const HAT_Y: f32 = 0.28;
+const HAT_SCALE: f32 = 0.72;
+
 /// Everything needed to spawn chick models.
 pub struct ChickAssets {
     pub model: Model,
     pub textures: HashMap<String, (Handle<Image>, [u32; 2])>,
     /// Model-space radius of the chick's body sphere.
     pub radius: f32,
+    /// Hat models by name, and each team's hat (index into [`HATS`]).
+    pub hats: HashMap<String, Model>,
+    pub team_hat: [usize; 2],
+}
+
+/// Swaps a yellow team texture ("...Y", "...YL", "...Yellow") for the black team's.
+fn black_texture(tex: &HashMap<String, (Handle<Image>, [u32; 2])>, h: &Handle<Image>) -> Option<Handle<Image>> {
+    let name = tex.iter().find(|(_, (th, _))| th == h).map(|(n, _)| n.clone())?;
+    let swapped = name
+        .strip_suffix("Yellow")
+        .map(|b| format!("{b}Black"))
+        .or_else(|| name.strip_suffix('Y').map(|b| format!("{b}B")))
+        .or_else(|| name.strip_suffix("YL").map(|b| format!("{b}BL")))?;
+    tex.get(&swapped).map(|(bh, _)| bh.clone())
+}
+
+/// Puts a hat on a spawned chick model (`chick` is its root entity).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_hat(
+    commands: &mut Commands,
+    chick: Entity,
+    model: &Model,
+    textures: &HashMap<String, (Handle<Image>, [u32; 2])>,
+    team: Team,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<GxMaterial>,
+    images: &mut Assets<Image>,
+) -> Entity {
+    let tex = textures.clone();
+    let tweak = move |_: &wii_formats::mdl0::Mesh, _: &str, mat: &mut GxMaterial| {
+        if team == Team::Black {
+            for slot in [&mut mat.tex0, &mut mat.tex1] {
+                if let Some(bh) = slot.as_ref().and_then(|h| black_texture(&tex, h)) {
+                    *slot = Some(bh);
+                }
+            }
+        }
+        true
+    };
+    let hat = g3d::spawn_model(commands, chick, model, textures, meshes, materials, images, &tweak);
+    commands.entity(hat).insert(Transform::from_xyz(0.0, HAT_Y, 0.0).with_scale(Vec3::splat(HAT_SCALE)));
+    hat
 }
 
 impl ChickAssets {
@@ -109,7 +175,7 @@ impl ChickAssets {
             .fold(0.0f32, f32::max);
         debug!("chick body radius {radius}");
         let radius = if radius > 0.01 { radius } else { 0.45 };
-        Self { model, textures, radius }
+        Self { model, textures, radius, hats: HashMap::new(), team_hat: [0, 0] }
     }
 }
 
@@ -128,25 +194,29 @@ pub fn spawn_chick(
     images: &mut Assets<Image>,
 ) -> Entity {
     // The model carries the yellow team's textures ("...Y"); black chicks use the
-    // matching "...B" textures.
+    // matching "...B" textures. A hat replaces the head feather.
     let tex = assets.textures.clone();
-    let tweak = move |_: &wii_formats::mdl0::Mesh, mat_name: &str, mat: &mut GxMaterial| {
-        let _ = mat_name;
+    let hat_name = HATS.get(assets.team_hat[team.index()]).map_or("hatNaked", |h| h.0);
+    let hat = assets.hats.get(&if big { hat_name.to_string() } else { format!("{hat_name}_s") }).filter(|_| hat_name != "hatNaked");
+    let feather = assets.model.bones.iter().position(|b| b.name == "headFeather");
+    let bald = hat.is_some();
+    let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut GxMaterial| {
+        if bald && Some(m.bone) == feather {
+            return false;
+        }
         if team == Team::Black {
             for slot in [&mut mat.tex0, &mut mat.tex1] {
-                let Some(h) = slot.clone() else { continue };
-                let name = tex.iter().find(|(_, (th, _))| *th == h).map(|(n, _)| n.clone());
-                if let Some(n) = name {
-                    let swapped = n.strip_suffix('Y').map(|b| format!("{b}B")).or_else(|| n.strip_suffix("YL").map(|b| format!("{b}BL")));
-                    if let Some((bh, _)) = swapped.and_then(|s| tex.get(&s)) {
-                        *slot = Some(bh.clone());
-                    }
+                if let Some(bh) = slot.as_ref().and_then(|h| black_texture(&tex, h)) {
+                    *slot = Some(bh);
                 }
             }
         }
         true
     };
     let visual = g3d::spawn_model(commands, parent, &assets.model, &assets.textures, meshes, materials, images, &tweak);
+    if let Some(h) = hat {
+        spawn_hat(commands, visual, h, &assets.textures, team, meshes, materials, images);
+    }
     // Each team has one big chick (double health) and small ones.
     // Each team has one general (`chickGeneralSizeFac` bigger; the tips say it can take more
     // damage) and small chicks.
