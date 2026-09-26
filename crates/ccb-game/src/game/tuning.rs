@@ -97,6 +97,9 @@ pub struct Tuning {
     pub plant_grow_max_len: f32,
     pub plant_head_dir_interp: f32,
     pub plant_charred_time: f32,
+    /// `plantInitialPenducle` per variant (plain, green, red): the stem it sprouts with,
+    /// relative to its anchor, leaning to +x.
+    pub plant_penducle: Vec<Vec<Vec2>>,
     // environment
     pub cloud_y: f32,
     pub sp: SpecialTuning,
@@ -428,6 +431,15 @@ impl Tuning {
             plant_grow_max_len: at.f32("plantGrowMaxLen")?,
             plant_head_dir_interp: at.f32("plantHeadDirInterpolationFac")?,
             plant_charred_time: at.f32("plantCharredTimer")?,
+            // "3  0.20 0.6 0.0  0.3 0.9 0.0  0.29 1.1 0.0": a count, then x y z points; one line per variant.
+            plant_penducle: at
+                .lines
+                .iter()
+                .skip_while(|l| !l.label.as_deref().is_some_and(|x| x.starts_with("plantInitialPenducle")))
+                .skip(1)
+                .take(3)
+                .map(|l| l.values.iter().skip(1).map(|v| num(v)).collect::<Vec<f32>>().chunks(3).filter(|c| c.len() == 3).map(|c| Vec2::new(c[0], c[1])).collect())
+                .collect(),
             cloud_y: env.f32("cloudY")?,
             sp: {
                 let v3 = |b: &ccb_assets::cfg::Block, l: &str| b.vec3(l).map(Vec3::from).unwrap_or(Vec3::ZERO);

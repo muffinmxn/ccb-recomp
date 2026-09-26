@@ -205,6 +205,10 @@ impl GameAssets {
             if mat_name == "plantCircleMat" {
                 mat.params.konst[0] = Vec4::new(1.0, 0.85, 0.1, 1.0);
             }
+            // The flytrap's head colour is set from code too; its leaves' green.
+            if mat_name == "plantHeadMat" {
+                mat.params.konst[0] = Vec4::new(148.0 / 255.0, 184.0 / 255.0, 3.0 / 255.0, 1.0);
+            }
             if team == Team::Black {
                 if let Some(h) = mat.tex0.clone() {
                     if let Some((n, _)) = tex.iter().find(|(_, (th, _))| *th == h) {

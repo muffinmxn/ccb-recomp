@@ -17,7 +17,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     if std::env::var("TRACKS").is_ok_and(|s| s == *name) {
                         for t in a.tracks.iter().take(8) {
-                            let ev = |c: &Option<[wii_formats::chr0::Channel; 3]>| c.as_ref().map(|c| [c[0].eval(0.0), c[1].eval(0.0), c[2].eval(0.0)]);
+                            let f: f32 = std::env::var("FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                            let ev = |c: &Option<[wii_formats::chr0::Channel; 3]>| c.as_ref().map(|c| [c[0].eval(f), c[1].eval(f), c[2].eval(f)]);
                             println!("{} s {:?} r {:?} t {:?}", t.bone, ev(&t.scale), ev(&t.rotation), ev(&t.translation));
                         }
                     }

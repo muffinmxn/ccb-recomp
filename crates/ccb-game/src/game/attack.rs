@@ -34,6 +34,9 @@ const SPIRAL_LEN: f32 = 1.0;
 /// `plantBarrierSegmentDistance`.
 const PLANT_GRAB: f32 = 1.1;
 const PLANT_LIFETIME: f32 = 10.0;
+/// `plantInitialPenducle` is in the original's plant units; this makes the stem about a
+/// chick and a half tall.
+const PENDUCLE_SCALE: f32 = 1.3;
 /// Model sizes for the specials (the ghost's loop clip scales it up ~2.6x).
 const GHOST_LOOK: f32 = 0.85;
 const OCTOPUS_LOOK: f32 = 5.5;
@@ -299,40 +302,64 @@ fn blast(chicks: &mut Query<(Entity, &mut Chick)>, barriers: &Query<(Entity, &mu
     }
 }
 
-/// One frame of a growing plant: it bites chicks in range, otherwise grows its head towards
-/// the nearest chick (never downwards) and climbs lines it meets towards their higher end.
+/// The plant's intro pop (`plant__intro`: its root scale over 16 frames, relative to the
+/// final 2.49), as (x, y) per frame 0, 4, 8, 12, 16; it starts from nothing.
+const PLANT_INTRO: [(f32, f32); 5] = [(0.0, 0.0), (0.53, 0.59), (0.93, 1.05), (0.98, 0.92), (1.0, 1.0)];
+const PLANT_INTRO_TIME: f32 = 16.0 / 60.0;
+
+/// Head scale (x, y) `t` seconds after the head appeared.
+fn plant_pop(t: f32) -> Vec2 {
+    let f = (t / PLANT_INTRO_TIME).clamp(0.0, 1.0) * 4.0;
+    let i = (f.floor() as usize).min(3);
+    let (a, b) = (PLANT_INTRO[i], PLANT_INTRO[i + 1]);
+    let k = f - i as f32;
+    Vec2::new(a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k)
+}
+
+/// One frame of a plant. As in the original it sprouts a short stem (`plantInitialPenducle`)
+/// where it was aimed and bites every chick that comes close; it only grows by climbing a line
+/// within `plantBarrierSegmentDistance` of its head, along it and only upwards.
 /// Returns true when it dies (starved, too long above `plantGrowYThreshold`).
 fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Barrier)>, chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx::Sfx, dt: f32) -> bool {
     let target = a.target();
     a.starving += dt;
     a.cooldown -= dt;
     let head = a.pos;
-    // Biting: a short windup, then the snap.
+    let prey = chicks
+        .iter()
+        .filter(|(_, c)| c.team == target && c.alive())
+        .map(|(_, c)| c.pos)
+        .min_by(|x, y| x.distance(head).total_cmp(&y.distance(head)));
+    // Biting: a short windup, then the snap hits every chick in range.
     if let Some(b) = a.bite {
         let b = b + dt;
         if b >= tuning.plant_bite_time && b - dt < tuning.plant_bite_time {
             let dmg = tuning.plant_damage.damage(a.quality);
-            let victim = chicks
-                .iter_mut()
-                .filter(|(_, c)| c.team == target && c.alive())
-                .min_by(|x, y| x.1.pos.distance(head).total_cmp(&y.1.pos.distance(head)));
-            if let Some((_, mut c)) = victim {
-                if c.pos.distance(head) <= tuning.plant_bite_range + c.radius {
-                    let push = (c.pos - head).normalize_or(Vec2::Y) * 1.5 + Vec2::Y;
-                    c.damage(dmg, push);
-                    sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { "SFX_CHICKS_AUA02" });
-                    a.starving = 0.0;
-                    // Scorpion Fern poisons, Fire Flower confuses.
-                    let mid = |r: (f32, f32)| (r.0 + r.1) / 2.0;
-                    match a.upgrade {
-                        1 => {
-                            c.sick = mid(tuning.up.sick_time);
-                            c.sick_extra = tuning.up.sick_dmg;
-                            sfx.play("SFX_ATTACKS_PLANT_TOXIC_BITE");
-                        }
-                        2 => c.confused = mid(tuning.up.confused_time),
-                        _ => {}
+            let reach = head + a.vel * 0.5;
+            let mut bit = 0;
+            for (_, mut c) in chicks.iter_mut() {
+                if c.team != target || !c.alive() || c.pos.distance(reach) > tuning.plant_bite_range + c.radius * 0.5 {
+                    continue;
+                }
+                let push = (c.pos - head).normalize_or(Vec2::Y) * 1.5 + Vec2::Y;
+                c.damage(dmg, push);
+                sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { OUCH[bit % OUCH.len()] });
+                bit += 1;
+                // Scorpion Fern poisons, Fire Flower confuses.
+                let mid = |r: (f32, f32)| (r.0 + r.1) / 2.0;
+                match a.upgrade {
+                    1 => {
+                        c.sick = mid(tuning.up.sick_time);
+                        c.sick_extra = tuning.up.sick_dmg;
                     }
+                    2 => c.confused = mid(tuning.up.confused_time),
+                    _ => {}
+                }
+            }
+            if bit > 0 {
+                a.starving = 0.0;
+                if a.upgrade == 1 {
+                    sfx.play("SFX_ATTACKS_PLANT_TOXIC_BITE");
                 }
             }
             sfx.play_one_of(&["SFX_ATTACKS_PLANT_BITE_1", "SFX_ATTACKS_PLANT_BITE_2", "SFX_ATTACKS_PLANT_BITE_3"], a.path.len());
@@ -345,22 +372,21 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
         }
         return false;
     }
-    let prey = chicks
-        .iter()
-        .filter(|(_, c)| c.team == target && c.alive())
-        .map(|(_, c)| c.pos)
-        .min_by(|x, y| x.distance(head).total_cmp(&y.distance(head)));
+    // Sprouting: the stem unrolls along its initial shape.
+    if a.t < tuning.plant_sprout_time {
+        return false;
+    }
+    // A chick close by (`plantBiteRangePrepare` .. `plantBiteRange`): snap at it.
     if let Some(p) = prey {
         if p.distance(head) <= tuning.plant_bite_range && a.cooldown <= 0.0 {
+            a.vel = (p - head).normalize_or(a.vel);
             a.bite = Some(0.0);
             return false;
         }
     }
     let len: f32 = a.path.windows(2).map(|w| w[0].distance(w[1])).sum();
-    let sprouting = a.t < tuning.plant_sprout_time;
-    let speed = tuning.plant_grow_speed * if sprouting { 2.0 } else { 1.0 };
+    let step = tuning.plant_grow_speed * dt;
     if len < tuning.plant_grow_max_len {
-        let step = speed * dt;
         if let Some((be, seg, dir)) = a.climbing {
             // Climbing a line: follow it towards its higher end, only upwards.
             match barriers.get(be).ok().map(|(_, b)| b.points.clone()) {
@@ -388,9 +414,8 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
                 _ => a.climbing = None,
             }
         } else {
-            // A line within `plantBarrierSegmentDistance` of the head gets grabbed (not the one
-            // it just climbed off).
-            let head = a.pos;
+            // A line within reach of the head (not the one it just left) pulls it over;
+            // otherwise the plant stays put, turning towards the chicks.
             let left_line = a.victim;
             let near = barriers
                 .iter()
@@ -402,31 +427,23 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
                         (e, i, w[0] + seg * t, if w[1].y >= w[0].y { 1 } else { -1 })
                     })
                 })
+                .filter(|x| x.2.y >= head.y - 0.3)
                 .min_by(|x, y| x.2.distance(head).total_cmp(&y.2.distance(head)))
                 .filter(|x| x.2.distance(head) < PLANT_GRAB);
-            if let Some((be, seg, p, dir)) = near {
-                a.path.push(p);
-                a.pos = p;
-                a.climbing = Some((be, seg, dir));
-                return false;
-            }
-            // Head for the nearest chick, but never downwards.
-            let want = prey.map_or(Vec2::Y, |p| (p - head).normalize_or(Vec2::Y));
-            let want = if sprouting { Vec2::Y } else { Vec2::new(want.x, want.y.max(0.0)).normalize_or(Vec2::X * want.x.signum()) };
-            let k = 1.0 - (1.0 - tuning.plant_head_dir_interp).powf(dt * 60.0);
-            a.vel = a.vel.lerp(want, k).normalize_or(Vec2::Y);
-            let next = a.pos + a.vel * step;
-            if let Some((p, seg, be)) = super::barrier::segment_hit(barriers, target, a.pos, next + a.vel * 0.1) {
-                // Met a line: climb it towards its higher end.
-                if let Ok((_, b)) = barriers.get(be) {
-                    let dir = if b.points[seg + 1].y >= b.points[seg].y { 1 } else { -1 };
-                    a.pos = p;
-                    a.climbing = Some((be, seg, dir));
+            match near {
+                Some((be, seg, p, dir)) => {
+                    if a.pos.distance(p) <= step {
+                        a.pos = p;
+                        a.climbing = Some((be, seg, dir));
+                    } else {
+                        a.vel = (p - a.pos).normalize_or(Vec2::Y);
+                        a.pos += a.vel * step;
+                    }
                 }
-            } else {
-                a.pos = next;
-                if !sprouting {
-                    a.pos.y = a.pos.y.max(0.35);
+                None => {
+                    let want = prey.map_or(a.vel, |p| (p - head).normalize_or(Vec2::Y));
+                    let k = 1.0 - (1.0 - tuning.plant_head_dir_interp).powf(dt * 60.0);
+                    a.vel = a.vel.lerp(want, k).normalize_or(Vec2::Y);
                 }
             }
         }
@@ -829,10 +846,19 @@ pub fn update_attacks(
             // ---------------------------------------------------------------- plant
             (AttackKind::Plant, AttackState::Prepare) => {
                 if a.t >= tuning.attack_prepare_time {
-                    // Sprouts at its anchor and grows as a vine towards the chicks.
+                    // Sprouts at its anchor, its stem leaning towards the nearest chick.
                     a.pos = Vec2::new(a.target_x, 0.0);
                     a.path = vec![a.pos];
-                    a.vel = Vec2::Y;
+                    let here = a.pos.x;
+                    let (lo, hi) = tuning.side_range(target);
+                    let toward = chicks
+                        .iter()
+                        .filter(|(_, c)| c.team == target && c.alive())
+                        .map(|(_, c)| c.pos.x)
+                        .min_by(|p, q| (p - here).abs().total_cmp(&(q - here).abs()))
+                        .unwrap_or((lo + hi) / 2.0);
+                    a.wait = if toward >= here { 1.0 } else { -1.0 };
+                    a.vel = Vec2::new(a.wait, 1.0).normalize();
                     a.starve_limit = rng.range(tuning.plant_starving);
                     a.cooldown = tuning.plant_start_bite_cooldown;
                     sfx.play("SFX_ATTACKS_PLANT_APPEAR");
@@ -857,6 +883,34 @@ pub fn update_attacks(
                 }
             }
             (AttackKind::Plant, AttackState::Travel) => {
+                // Sprouting: the stem unrolls along `plantInitialPenducle`.
+                if a.t < tuning.plant_sprout_time {
+                    let shape = tuning.plant_penducle.get(a.upgrade as usize).or(tuning.plant_penducle.first()).cloned().unwrap_or_else(|| vec![Vec2::new(0.2, 0.6), Vec2::new(0.3, 1.1)]);
+                    let root = a.path[0];
+                    let mut full = vec![root];
+                    full.extend(shape.iter().map(|p| root + Vec2::new(p.x * a.wait, p.y) * PENDUCLE_SCALE));
+                    let total: f32 = full.windows(2).map(|w| w[0].distance(w[1])).sum();
+                    let mut left = total * (a.t / tuning.plant_sprout_time).min(1.0);
+                    let mut path = vec![root];
+                    for w in full.windows(2) {
+                        let d = w[0].distance(w[1]);
+                        if left >= d {
+                            path.push(w[1]);
+                            left -= d;
+                        } else {
+                            path.push(w[0] + (w[1] - w[0]) * (left / d.max(1e-4)));
+                            break;
+                        }
+                    }
+                    a.pos = *path.last().unwrap();
+                    if a.t + dt >= tuning.plant_sprout_time {
+                        a.path = full;
+                        a.pos = *a.path.last().unwrap();
+                    } else {
+                        a.path = path;
+                    }
+                    a.vine_key = 0;
+                }
                 let died = grow_plant(&mut a, &tuning, &barriers, &mut chicks, &mut sfx, dt);
                 draw_vine(&mut commands, &mut meshes, &mut a, 1.0);
                 // The head sits on the vine's tip, leaning along it; a bite lunges it forward.
@@ -868,7 +922,10 @@ pub fn update_attacks(
                 // towards its prey.
                 let rot = Quat::from_rotation_y(d.x.clamp(-1.0, 1.0) * 0.6) * Quat::from_rotation_z((-d.x * 0.25).clamp(-0.3, 0.3));
                 let snap = 1.0 + lunge * 0.3;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(tip.x, tip.y - 0.15 * s, z + 0.35).with_rotation(rot).with_scale(Vec3::splat(s * snap)));
+                // The head pops out like `plant__intro` as the stem finishes sprouting.
+                let pop = plant_pop(a.t - tuning.plant_sprout_time * 0.5);
+                let scale = Vec3::new(pop.x.max(0.01), pop.y.max(0.01), pop.x.max(0.01)) * s * snap;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(tip.x, tip.y - 0.15 * s, z + 0.35).with_rotation(rot).with_scale(scale));
                 if died {
                     sfx.play("SFX_ATTACKS_PLANT_ROTT");
                     a.state = AttackState::Blocked;
