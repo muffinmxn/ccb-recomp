@@ -62,6 +62,14 @@ pub struct Match {
     pub winner: Option<Team>,
     /// HUD animation to start on the next update.
     pub hud_anim: Option<String>,
+    /// Level specials (UFO, sea monster, ghost, lightning).
+    pub specials: Vec<AttackKind>,
+    /// Open special window: (attack, seconds left). Both sides race to trace it.
+    pub special: Option<(AttackKind, f32)>,
+    /// Seconds until the next special window.
+    pub special_timer: f32,
+    /// A traced special ready to launch: (from team, attack, quality).
+    pub pending_special: Option<(Team, AttackKind, f32)>,
 }
 
 impl Match {
@@ -85,17 +93,20 @@ impl Match {
 #[derive(Resource)]
 pub struct GameAssets {
     models: HashMap<String, Model>,
+    /// Inverse bind poses of skinned models (e.g. the tentacle).
+    skins: HashMap<String, Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     widths: HashMap<String, f32>,
     textures: HashMap<String, (Handle<Image>, [u32; 2])>,
     clips: Vec<Arc<Clip>>,
     root: Entity,
 }
 
-fn model_width(m: &Model) -> f32 {
+/// Bind-pose extent of a model along one axis.
+fn model_extent(m: &Model, axis: usize) -> f32 {
     let (mut lo, mut hi) = (f32::MAX, f32::MIN);
     for p in m.meshes.iter().flat_map(|x| x.positions.iter()) {
-        lo = lo.min(p[0]);
-        hi = hi.max(p[0]);
+        lo = lo.min(p[axis]);
+        hi = hi.max(p[axis]);
     }
     (hi - lo).max(0.01)
 }
@@ -133,7 +144,7 @@ impl GameAssets {
             }
             true
         };
-        let e = g3d::spawn_model(commands, self.root, model, &self.textures, meshes, materials, images, &tweak);
+        let e = g3d::spawn_model_skinned(commands, self.root, model, &self.textures, meshes, materials, images, &tweak, self.skins.get(name).cloned());
         commands.entity(e).insert(Transform::from_xyz(0.0, -100.0, 0.0).with_scale(Vec3::splat(self.scale(name, width))));
         e
     }
@@ -183,6 +194,22 @@ impl GameAssets {
         e
     }
 
+    /// A translucent vertical beam (UFO tractor beam).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_beam(&self, commands: &mut Commands, x: f32, bottom: f32, top: f32, z: f32, width: f32, color: Vec4, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> Entity {
+        let h = (top - bottom).max(0.1);
+        let mut mat = super::barrier::solid_material(color);
+        mat.params.konst[3].w = color.w;
+        commands
+            .spawn((
+                Mesh3d(meshes.add(Rectangle::new(width, h))),
+                MeshMaterial3d(materials.add(mat)),
+                Transform::from_xyz(x, bottom + h / 2.0, z + 0.3),
+                DespawnOnExit(Screen::Level),
+            ))
+            .id()
+    }
+
     /// A lightning bolt: a bright quad from `bottom` to `top` at `x`.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_bolt(&self, commands: &mut Commands, x: f32, bottom: f32, top: f32, z: f32, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> Entity {
@@ -223,6 +250,7 @@ fn button_icon(kind: AttackKind) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 pub fn start_match(
     mut commands: Commands,
+    mut skin_store: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
     opts: Res<crate::Options>,
     mut data: ResMut<GameData>,
     mut lyt: ResMut<LayoutAssets>,
@@ -255,7 +283,19 @@ pub fn start_match(
                 models.insert(name.to_string(), m);
             }
         }
-        let widths = models.iter().map(|(n, m)| (n.clone(), model_width(m))).collect();
+        // The level theme's special-attack models.
+        for name in ["ufo", "bgUfoBeam", "tentacle", "octopus", "ghost"] {
+            if let Ok(m) = theme.model(name) {
+                models.insert(name.to_string(), m);
+            }
+        }
+        let mut clips = clips;
+        clips.extend(crate::anim::load_clips(&theme)?);
+        // Tall models (the tentacle) are sized by height, everything else by width.
+        let widths = models
+            .iter()
+            .map(|(n, m)| (n.clone(), if n == "tentacle" { model_extent(m, 1) } else { model_extent(m, 0) }))
+            .collect();
         let root = commands.spawn((Name::new("gameplay"), Transform::default(), Visibility::default(), DespawnOnExit(Screen::Level))).id();
         let chick_assets = ChickAssets::new(common.model("chick")?, textures.clone());
 
@@ -308,15 +348,21 @@ pub fn start_match(
             attacker: first,
             turn_timer: tuning.attack_time,
             match_time: 0.0,
-            available,
+            available: available.clone(),
             selected: None,
             pending: None,
             attack: None,
             max_health: [0.0; 2],
             winner: None,
             hud_anim: Some(format!("hud_clockStart{side}")),
+            // One special per arena, as on the arena screen.
+            specials: available.iter().copied().find(|k| !k.is_basic() && k.implemented()).into_iter().collect(),
+            special: None,
+            special_timer: rng.range(tuning.special_first),
+            pending_special: None,
         });
-        commands.insert_resource(GameAssets { models, widths, textures, clips, root });
+        let skins = models.iter().filter_map(|(n, m)| g3d::inverse_binds(m, &mut skin_store).map(|h| (n.clone(), h))).collect();
+        commands.insert_resource(GameAssets { models, skins, widths, textures, clips, root });
         commands.insert_resource(tuning);
         Ok(())
     })();
@@ -411,6 +457,48 @@ pub fn run_match(
             }
         }
     }
+    // Special windows open between turns' flow; both sides race to trace them.
+    if !matches!(m.phase, Phase::Spin(_) | Phase::GameOver(_)) && !m.specials.is_empty() {
+        match m.special {
+            Some((kind, left)) => {
+                let left = left - dt;
+                if left <= 0.0 {
+                    m.special = None;
+                    if m.selected == Some(kind) {
+                        m.selected = None;
+                    }
+                } else {
+                    m.special = Some((kind, left));
+                }
+            }
+            None => {
+                m.special_timer -= dt;
+                if m.special_timer <= 0.0 {
+                    let specials = m.specials.clone();
+                    if let Some(kind) = rng.pick(&specials) {
+                        info!("special window: {kind:?}");
+                        sfx.play("SFX_ATTACK_IFC_SELECTOR_EVENT_ACTIVATED");
+                        m.special = Some((kind, tuning.special_window));
+                    }
+                    m.special_timer = rng.range(tuning.special_every);
+                }
+            }
+        }
+    }
+    if let Some((from, kind, quality)) = m.pending_special.take() {
+        let target = from.other();
+        let xs: Vec<f32> = chicks.iter().filter(|c| c.team == target && c.alive()).map(|c| c.pos.x).collect();
+        let (lo, hi) = tuning.side_range(target);
+        let aim = rng.pick(&xs).unwrap_or((lo + hi) / 2.0);
+        let tx = (aim + (1.0 - quality) * 2.0 * (rng.f32() * 2.0 - 1.0)).clamp(lo, hi);
+        info!("{from:?} wins the {kind:?} race");
+        commands.spawn((Attack::new(kind, from, quality, tx), DespawnOnExit(Screen::Level)));
+        sfx.play("SFX_ATTACK_IFC_LAUNCH");
+        m.special = None;
+        if m.selected == Some(kind) {
+            m.selected = None;
+        }
+    }
     match m.phase {
         Phase::Spin(t) => {
             m.phase = if t + dt >= SPIN_TIME {
@@ -483,7 +571,12 @@ pub fn player_attack_buttons(
 ) {
     let my_turn = m.phase == Phase::Attack && m.attacker == Team::Yellow && m.pending.is_none();
     for (e, b) in &buttons {
-        let usable = my_turn && b.kind.implemented() && m.selected.is_none();
+        let usable = if b.kind.is_basic() {
+            my_turn && b.kind.implemented() && m.selected.is_none()
+        } else {
+            // Specials can be traced whenever their window is open, even off-turn.
+            m.special.is_some_and(|(k, _)| k == b.kind) && m.selected.is_none()
+        };
         let over = pointer.pos.is_some_and(|p| p.distance(b.center) < b.size * 0.5);
         let h = hover.entry(e).or_insert(0.0);
         if over && usable && *h == 0.0 {

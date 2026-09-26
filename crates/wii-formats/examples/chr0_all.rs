@@ -15,6 +15,12 @@ fn main() -> anyhow::Result<()> {
                     if std::env::var("LIST").is_ok() {
                         println!("{:32} frames {:4} loop {}", a.name, a.frames, a.looping);
                     }
+                    if std::env::var("TRACKS").is_ok_and(|s| s == *name) {
+                        for t in a.tracks.iter().take(8) {
+                            let ev = |c: &Option<[wii_formats::chr0::Channel; 3]>| c.as_ref().map(|c| [c[0].eval(0.0), c[1].eval(0.0), c[2].eval(0.0)]);
+                            println!("{} s {:?} r {:?} t {:?}", t.bone, ev(&t.scale), ev(&t.rotation), ev(&t.translation));
+                        }
+                    }
                     if std::env::var("SHOW").is_ok_and(|s| s == *name) {
                         for t in &a.tracks {
                             let s = t.scale.as_ref().map(|c| [0.0, a.frames as f32].map(|f| c[0].eval(f)));

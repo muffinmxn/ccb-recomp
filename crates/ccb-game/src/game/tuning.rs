@@ -37,6 +37,11 @@ pub struct Tuning {
     pub attack_starting_time: f32,
     pub attack_prepare_time: f32,
     pub attack_finish_time: f32,
+    /// Seconds between special-attack windows (first window, later windows).
+    pub special_first: (f32, f32),
+    pub special_every: (f32, f32),
+    /// How long a special window stays open (`ufoEffectiveTimer`).
+    pub special_window: f32,
     // bomb
     pub bomb_appear: Vec2,
     pub bomb_damage: DamageSettings,
@@ -104,6 +109,11 @@ impl Tuning {
             at.line(label).map(|l| l.values.iter().skip(1).map(|v| num(v)).collect()).unwrap_or_default()
         };
         let attack_times = table("attackModeTimersDuell");
+        // envAssist*PauseDuell: "3  35 40 35 40 5 10" -> count, then a (min, max) pair per difficulty.
+        let pair = |label: &str| -> (f32, f32) {
+            let v = table(label);
+            (v.get(DIFFICULTY * 2).copied().unwrap_or(30.0), v.get(DIFFICULTY * 2 + 1).copied().unwrap_or(40.0))
+        };
         let defend_times = table("defendModeTimersDuell");
         let weight_thresholds = at
             .line("weightQualityTypeThresholds")
@@ -147,6 +157,9 @@ impl Tuning {
             barrier_thickness: bs.f32("barrierSegmentFullThickness")?,
             barrier_y_clip: bs.f32("yClipping")?,
             attack_time: attack_times.get(DIFFICULTY).copied().unwrap_or(25.0),
+            special_first: pair("envAssistInitPauseDuell"),
+            special_every: pair("envAssistPauseDuell"),
+            special_window: env.f32("ufoEffectiveTimer").unwrap_or(15.0),
             defend_time: defend_times.get(DIFFICULTY).copied().unwrap_or(7.0),
             attack_starting_time: at.f32("attackStartingTimer")?,
             attack_prepare_time: at.f32("attackPrepareTimer")?,

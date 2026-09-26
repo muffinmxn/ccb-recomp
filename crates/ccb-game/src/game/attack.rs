@@ -23,6 +23,13 @@ const STRIKE_RADIUS: f32 = 1.3;
 const PLANT_HEIGHT: f32 = 3.2;
 const PLANT_GROW_TIME: f32 = 1.0;
 const PLANT_BITE_RADIUS: f32 = 1.7;
+const UFO_Y: f32 = 6.2;
+const UFO_BEAM_TIME: f32 = 1.4;
+const TENTACLE_Y: f32 = 1.1;
+const TENTACLE_LEN: f32 = 7.0;
+const TENTACLE_SWEEP_TIME: f32 = 1.1;
+const GHOST_SPEED: f32 = 4.5;
+const GHOST_BARRIERS_TO_STOP: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AttackState {
@@ -53,11 +60,15 @@ pub struct Attack {
     flash: Option<Entity>,
     /// Weight variant (1..=6: TV, sofa, piano, metal, elephant, whale).
     variant: usize,
+    /// Chicks already hit (sweeping attacks hit each chick once).
+    hit: Vec<Entity>,
+    /// Barriers eaten by a ghost.
+    pub eaten: u32,
 }
 
 impl Attack {
     pub fn new(kind: AttackKind, from: Team, quality: f32, target_x: f32) -> Self {
-        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None, variant: 1 }
+        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None, variant: 1, hit: Vec::new(), eaten: 0 }
     }
 
     pub fn target(&self) -> Team {
@@ -87,10 +98,10 @@ const WEIGHT_SOUNDS: [&str; 6] = [
 ];
 
 #[allow(clippy::too_many_arguments)]
-fn damage_chicks(chicks: &mut Query<&mut Chick>, sfx: &mut crate::sfx::Sfx, center: Vec2, radius: f32, full_radius: f32, damage: f32, push: f32, squash: bool) -> usize {
+fn damage_chicks(chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx::Sfx, center: Vec2, radius: f32, full_radius: f32, damage: f32, push: f32, squash: bool) -> usize {
     let squash_time = 2.0;
     let mut hits = 0;
-    for mut c in chicks.iter_mut() {
+    for (_, mut c) in chicks.iter_mut() {
         if !c.alive() {
             continue;
         }
@@ -123,7 +134,7 @@ pub fn update_attacks(
     assets: Res<GameAssets>,
     mut rng: ResMut<Rng>,
     mut attacks: Query<(Entity, &mut Attack)>,
-    mut chicks: Query<&mut Chick>,
+    mut chicks: Query<(Entity, &mut Chick)>,
     mut barriers: Query<(Entity, &mut Barrier)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
@@ -364,6 +375,176 @@ pub fn update_attacks(
                 let sink = (a.t - 1.0).max(0.0) * 4.0;
                 set_transform(&mut commands, a.visual, Transform::from_xyz(a.target_x, a.pos.y - sink, z - 0.3).with_scale(Vec3::splat(assets.scale("plant", 2.4))));
                 if a.t >= 2.0 {
+                    a.state = AttackState::Finished;
+                }
+            }
+            // ---------------------------------------------------------------- UFO (city special)
+            (AttackKind::Ufo, AttackState::Prepare) => {
+                if a.visual.is_none() {
+                    sfx.play("SFX_ATTACKS_UFO_APPEAR");
+                    a.visual = Some(assets.spawn(&mut commands, "ufo", a.from, 3.6, &mut meshes, &mut materials, &mut images));
+                }
+                // Descends over its target.
+                let k = (a.t / tuning.attack_prepare_time).min(1.0);
+                a.pos = Vec2::new(a.target_x, UFO_Y + (1.0 - k) * 8.0);
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                if a.t >= tuning.attack_prepare_time {
+                    sfx.play("SFX_ATTACKS_UFO_BEAM");
+                    let x = a.target_x;
+                    let (bottom, blocked) = match vertical_block(&barriers, target, x, UFO_Y - 0.6, 0.0) {
+                        Some((y, be)) => {
+                            if let Ok((_, mut b)) = barriers.get_mut(be) {
+                                b.flash = 0.4;
+                            }
+                            (y, true)
+                        }
+                        None => (0.0, false),
+                    };
+                    a.effect = Some(assets.spawn_beam(&mut commands, x, bottom, UFO_Y - 0.6, z, 1.3, Vec4::new(0.5, 0.9, 1.0, 0.6), &mut meshes, &mut materials));
+                    if blocked {
+                        a.state = AttackState::Blocked;
+                    } else {
+                        sfx.play("SFX_ATTACKS_UFO_SUCCESS");
+                        let dmg = tuning.weight_damage.damage(a.quality);
+                        damage_chicks(&mut chicks, &mut sfx, Vec2::new(x, 0.8), 1.4, 1.0, dmg, 0.5, false);
+                        a.state = AttackState::Impact;
+                    }
+                    a.t = 0.0;
+                }
+            }
+            (AttackKind::Ufo, AttackState::Blocked | AttackState::Impact) => {
+                if a.t > UFO_BEAM_TIME {
+                    if let Some(fx) = a.effect.take() {
+                        commands.entity(fx).despawn();
+                        sfx.play("SFX_ATTACKS_UFO_DISAPPEAR");
+                    }
+                    // Flies off.
+                    a.pos.y += (a.t - UFO_BEAM_TIME) * 0.6;
+                }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                if a.t >= UFO_BEAM_TIME + 1.5 {
+                    a.state = AttackState::Finished;
+                }
+            }
+            // ---------------------------------------------------------------- sea monster (ship special)
+            (AttackKind::Octopus, AttackState::Prepare) => {
+                // A tentacle rises at the outer edge of the target side.
+                let outer = target.side() * (tuning.side_width + 1.2);
+                if a.visual.is_none() {
+                    sfx.play("SFX_ATTACKS_OCTOPUS_APPEAR");
+                    a.visual = Some(assets.spawn_posed(&mut commands, "tentacle", "tentacle__intro", a.from, TENTACLE_LEN, &mut meshes, &mut materials, &mut images));
+                }
+                let k = (a.t / tuning.attack_prepare_time).min(1.0);
+                a.pos = Vec2::new(outer, -3.0 + (TENTACLE_Y + 3.0) * k);
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y - TENTACLE_LEN * 0.5, z).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
+                if a.t >= tuning.attack_prepare_time {
+                    sfx.play("SFX_ATTACKS_OCTOPUS_WHIP");
+                    if let Some(v) = a.visual {
+                        assets.play(&mut commands, v, "tentacle__slap");
+                    }
+                    a.state = AttackState::Travel;
+                    a.t = 0.0;
+                }
+            }
+            (AttackKind::Octopus, AttackState::Travel) => {
+                // The tip sweeps inward along the ground; a wall across its path stops it.
+                let outer = target.side() * (tuning.side_width + 1.2);
+                let inner = target.side() * (tuning.separator / 2.0 + 0.3);
+                let k = (a.t / TENTACLE_SWEEP_TIME).min(1.0);
+                let prev = a.pos.x;
+                let tip = outer + (inner - outer) * k;
+                let seg_a = Vec2::new(prev, TENTACLE_Y);
+                let seg_b = Vec2::new(tip, TENTACLE_Y);
+                if let Some((p, _, be)) = sweep_hit(&barriers, target, seg_a, seg_b, 0.5) {
+                    if let Ok((_, mut b)) = barriers.get_mut(be) {
+                        b.flash = 0.4;
+                    }
+                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
+                    if let Some(v) = a.visual {
+                        assets.play(&mut commands, v, "tentacle__block");
+                    }
+                    a.pos.x = p.x;
+                    a.state = AttackState::Blocked;
+                    a.t = 0.0;
+                } else {
+                    a.pos.x = tip;
+                    let dmg = tuning.bomb_damage.damage(a.quality) * 0.8;
+                    for (ce, mut c) in chicks.iter_mut() {
+                        if c.team == target && c.alive() && (c.pos.x - tip).abs() < 0.9 && !a.hit.contains(&ce) {
+                            c.damage(dmg, Vec2::new(-target.side() * 3.0, 3.0));
+                            sfx.play_one_of(&OUCH, a.hit.len());
+                            a.hit.push(ce);
+                        }
+                    }
+                    if k >= 1.0 {
+                        a.state = AttackState::Impact;
+                        a.t = 0.0;
+                    }
+                }
+                // The tentacle leans in from the edge, its tip following the sweep.
+                let reach = (a.pos.x - outer).abs().max(0.5);
+                let angle = (reach / TENTACLE_LEN).clamp(0.0, 1.0).asin();
+                set_transform(&mut commands, a.visual, Transform::from_xyz(outer, 0.0, z).with_rotation(Quat::from_rotation_z(target.side() * angle)).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
+            }
+            (AttackKind::Octopus, AttackState::Blocked | AttackState::Impact) => {
+                let outer = target.side() * (tuning.side_width + 1.2);
+                // Withdraws.
+                let k = (a.t / 0.8).min(1.0);
+                let x = a.pos.x + (outer - a.pos.x) * k;
+                let reach = (x - outer).abs().max(0.1);
+                let angle = (reach / TENTACLE_LEN).clamp(0.0, 1.0).asin();
+                set_transform(&mut commands, a.visual, Transform::from_xyz(outer, -k * 3.0, z).with_rotation(Quat::from_rotation_z(target.side() * angle)).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
+                if a.t >= 1.0 {
+                    sfx.play("SFX_ATTACKS_OCTOPUS_DISAPPEAR");
+                    a.state = AttackState::Finished;
+                }
+            }
+            // ---------------------------------------------------------------- ghost (haunted wood special)
+            (AttackKind::Ghost, AttackState::Prepare) => {
+                if a.visual.is_none() {
+                    sfx.play("SFX_ATTACKS_GHOST_APPEAR");
+                    a.pos = Vec2::new(target.side() * (tuning.side_width + 3.0), 8.0);
+                    a.visual = Some(assets.spawn_posed(&mut commands, "ghost", "ghost__loop", a.from, 2.2, &mut meshes, &mut materials, &mut images));
+                }
+                let fade = (a.t / tuning.attack_prepare_time).min(1.0);
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2) * fade.max(0.05))));
+                if a.t >= tuning.attack_prepare_time {
+                    a.state = AttackState::Travel;
+                    a.t = 0.0;
+                }
+            }
+            (AttackKind::Ghost, AttackState::Travel) => {
+                // Swoops at its target, eating any barrier it touches.
+                let goal = Vec2::new(a.target_x, 1.0);
+                let dir = (goal - a.pos).normalize_or(Vec2::NEG_Y);
+                let wobble = Vec2::new(0.0, (a.t * 6.0).sin() * 0.8);
+                let next = a.pos + (dir * GHOST_SPEED + wobble) * dt;
+                if let Some((_, _, be)) = sweep_hit(&barriers, target, a.pos, next, 0.8) {
+                    commands.entity(be).despawn();
+                    a.eaten += 1;
+                    sfx.play_one_of(&["SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_1", "SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_2", "SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_3"], a.eaten as usize);
+                    if a.eaten >= GHOST_BARRIERS_TO_STOP {
+                        sfx.play("SFX_ATTACKS_GHOST_DEFEND");
+                        a.state = AttackState::Blocked;
+                        a.t = 0.0;
+                    }
+                }
+                a.pos = next;
+                if a.pos.distance(goal) < 0.4 {
+                    sfx.play("SFX_ATTACKS_GHOST_DMG");
+                    let dmg = tuning.weight_damage.damage(a.quality);
+                    damage_chicks(&mut chicks, &mut sfx, goal, 1.4, 1.0, dmg, 1.0, false);
+                    a.state = AttackState::Impact;
+                    a.t = 0.0;
+                }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2))));
+            }
+            (AttackKind::Ghost, AttackState::Blocked | AttackState::Impact) => {
+                // Drifts up and fades away.
+                a.pos.y += dt * 4.0;
+                let fade = (1.0 - a.t).max(0.01);
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2) * fade)));
+                if a.t >= 1.0 {
                     a.state = AttackState::Finished;
                 }
             }

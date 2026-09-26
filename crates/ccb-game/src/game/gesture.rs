@@ -181,7 +181,11 @@ pub fn player_gesture(
         } else {
             "SFX_ATTACK_IFC_DRAWING_SUCCESS"
         });
-        m.pending = Some((kind, q));
+        if kind.is_basic() {
+            m.pending = Some((kind, q));
+        } else {
+            m.pending_special = Some((Team::Yellow, kind, q));
+        }
         m.selected = None;
     }
 }

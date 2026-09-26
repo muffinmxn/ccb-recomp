@@ -58,6 +58,14 @@ fn main() -> anyhow::Result<()> {
             "mesh {} mat {} bone {} xlu {} verts {} uvs {} colors {} uv range {lo:?}..{hi:?} pos0 {:?}",
             x.name, x.material, x.bone, x.translucent, x.positions.len(), x.uvs.len(), x.colors.len(), x.positions.first()
         );
+        let envelope = x.vertex_bones.iter().filter(|b| b.is_none()).count();
+        let distinct: std::collections::BTreeSet<_> = x.vertex_bones.iter().flatten().collect();
+        println!("  rigid {} envelope-verts {} distinct bones {}", x.rigid.is_some(), envelope, distinct.len());
+        if std::env::var("WEIGHTS").is_ok() {
+            for i in (0..x.weights.len()).step_by((x.weights.len() / 5).max(1)).take(5) {
+                println!("  v{i} pos {:?} w {:?}", x.positions[i], x.weights[i]);
+            }
+        }
         if std::env::var("VERBOSE").is_ok() {
             println!("  positions {:?}\n  vertex bones {:?}", x.positions, x.vertex_bones);
         }

@@ -59,6 +59,7 @@ docs/            per-subsystem reverse-engineering notes
   - [x] TEV stages → one WGSL uber-shader (`gx.wgsl`) that evaluates each material's combiner stages, konst colors, alpha test, blend/cull/depth state, in gamma space like the Wii.
   - [x] VIS0 bone visibility + bone visibility flags (fixes double chick faces, overlapping weight variants, plant parts).
   - [x] Environment-mapped texture layers (effect-matrix map mode 1: chick/bomb/plant shading).
+  - [x] Skinning: NodeMix envelope weights + inverse binds → Bevy `SkinnedMesh` (the sea-monster tentacle).
   - [ ] CLR0/SRT0/PAT0 animations; TEV swap tables; lighting channels (currently vertex color or white);
         the bomb's stripe-mask texgen (stripes render mostly black); >2 texture layers per material.
 - [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
@@ -80,7 +81,8 @@ docs/            per-subsystem reverse-engineering notes
   - [x] Gestures: control points from the `blueprints` layout, quality from `ingame.model.gesture` timings.
   - [x] Attacks: bomb (arc, deflects off barriers, explodes), weight (variant by quality, blocked by roofs), plant (grows from below, blocked by lids), lightning (level special, blocked by rods/roofs). Damage from the cfg damage settings.
   - [x] Attack interface like the original 1P screen: basic attacks bottom right, level special on the arc, gesture panel bottom left.
-  - [ ] UFO/ghost/octopus specials and the "race" for specials, attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side.
+  - [x] Level specials and the race: a special window opens every `envAssistPauseDuell` s for `ufoEffectiveTimer` s; whoever traces it first launches it, off-turn. UFO (beam; roofs block), sea monster (skinned tentacle sweep; walls block), ghost (eats barriers; two stop it).
+  - [ ] Attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side.
 - [x] **M6 AI (`ki.cfg`).** CPU attacks after `kiAttackStartTimer` + reaction time with drawing skill/quality per gesture, and defends by drawing shields at `kiDefendByShieldHeight` over the predicted impact, with a difficulty-based miss chance. `CCB_AUTOPLAY=1` lets the CPU play both sides.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**
   - [x] Arena select (`arenas` layout: city / ship / haunted wood), pause menu (`ingame_pause`, Esc; gameplay time freezes, menus keep animating), game-over banner (`gameover`), then back to arena select.

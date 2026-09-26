@@ -19,6 +19,10 @@ use crate::{data::GameData, gx_material::GxMaterial};
 #[derive(Default)]
 struct Side {
     enabled: bool,
+    /// Tracing the open special: (attack, seconds left, quality).
+    special: Option<(AttackKind, f32, f32)>,
+    /// Barriers drawn against the current attack (ghosts need two).
+    defended_count: u32,
     think: f32,
     drawing: Option<(AttackKind, f32, f32)>,
     defended: Option<Entity>,
@@ -88,6 +92,11 @@ fn eta(a: &Attack, tuning: &Tuning) -> f32 {
         (AttackKind::Lightning, _) => tuning.attack_prepare_time + 0.8 - a.t,
         (AttackKind::Plant, AttackState::Prepare) => tuning.attack_prepare_time - a.t + 0.6,
         (AttackKind::Plant, _) => 0.6 - a.t,
+        (AttackKind::Ufo, AttackState::Prepare) => tuning.attack_prepare_time - a.t,
+        (AttackKind::Octopus, AttackState::Prepare) => tuning.attack_prepare_time - a.t + 0.3,
+        (AttackKind::Octopus, _) => 0.3 - a.t,
+        (AttackKind::Ghost, AttackState::Prepare) => tuning.attack_prepare_time - a.t + 1.0,
+        (AttackKind::Ghost, _) => 0.8,
         _ => 0.0,
     }
 }
@@ -148,9 +157,37 @@ pub fn cpu_turn(
             side.drawing = None;
         }
 
+        // ---- racing for an open special
+        match (m.special, side.special) {
+            (Some((kind, _)), None) if m.pending_special.is_none() => {
+                // Start tracing after a reaction delay folded into the drawing time.
+                let dots = gestures.dots(kind) as f32;
+                let duration = rng.range(ki.start_reaction) + dots * rng.range(ki.draw_skill_time) * 3.5;
+                let quality = rng.range(ki.quality).clamp(0.05, 1.0);
+                side.special = Some((kind, duration, quality));
+            }
+            (Some((open, _)), Some((kind, left, quality))) if open == kind => {
+                let left = left - dt;
+                if left <= 0.0 {
+                    if m.pending_special.is_none() {
+                        m.pending_special = Some((team, kind, quality));
+                    }
+                    side.special = None;
+                } else {
+                    side.special = Some((kind, left, quality));
+                }
+            }
+            (None, Some(_)) => side.special = None,
+            _ => {}
+        }
+
         // ---- defending
         let Some((ae, a)) = attacks.iter().find(|(_, a)| a.target() == team) else { continue };
-        if side.defended == Some(ae) {
+        if side.defended != Some(ae) {
+            side.defended_count = 0;
+        }
+        let needed = if a.kind == AttackKind::Ghost { 2 } else { 1 };
+        if side.defended == Some(ae) && (side.defended_count >= needed || a.kind != AttackKind::Ghost || a.eaten < side.defended_count) {
             continue;
         }
         if side.defend_at <= 0.0 {
@@ -161,6 +198,7 @@ pub fn cpu_turn(
             continue;
         }
         side.defended = Some(ae);
+        side.defended_count += 1;
         side.defend_at = 0.0;
         let mut x = a.predicted_x();
         if rng.chance(ki.miss_chance) {
@@ -174,6 +212,18 @@ pub fn cpu_turn(
         };
         // Plants come from below: block them with a low lid.
         let h = if a.kind == AttackKind::Plant { rng.range((1.6, 2.4)) } else { h };
+        // Tentacles sweep along the ground: stand a wall in their way.
+        if a.kind == AttackKind::Octopus {
+            let wx = (x + team.side() * 1.2).clamp(tuning.side_range(team).0, tuning.side_range(team).1);
+            let pts: Vec<Vec2> = (0..=5).map(|i| Vec2::new(wx, 0.2 + i as f32 * 0.5)).collect();
+            if ink.0[team.index()] >= 2.5 {
+                ink.0[team.index()] -= 2.5;
+                spawn_barrier(&mut commands, team, pts, false, &tuning, &mut meshes, &mut materials);
+            }
+            continue;
+        }
+        // Ghosts: a line across their path, a bit above the target.
+        let h = if a.kind == AttackKind::Ghost { 2.5 + side.defended_count as f32 * 1.2 } else { h };
         // Tilt bomb shields so bombs glance back towards the thrower.
         let tilt = if a.kind == AttackKind::Bomb { 0.5 * -a.from.side() } else { 0.0 };
         // Keep the whole shield on our side.

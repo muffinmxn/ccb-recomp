@@ -95,7 +95,7 @@ impl AttackKind {
 
     /// Attacks this port can play so far.
     pub fn implemented(self) -> bool {
-        matches!(self, Self::Weight | Self::Bomb | Self::Lightning | Self::Plant)
+        matches!(self, Self::Weight | Self::Bomb | Self::Lightning | Self::Plant | Self::Ufo | Self::Octopus | Self::Ghost)
     }
 
     /// Bomb, weight and plant are every level's basic attacks; the rest are level specials.

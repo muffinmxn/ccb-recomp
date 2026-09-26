@@ -37,6 +37,8 @@ pub struct Bone {
     pub translation: [f32; 3],
     /// Bind-pose model-space transform.
     pub world: Mtx34,
+    /// Inverse of `world` as stored in the file.
+    pub inverse: Mtx34,
     /// Billboard mode (0 = none).
     pub billboard: u32,
     /// Raw bone flags (0x100 = visible).
@@ -154,6 +156,9 @@ pub struct Mesh {
     pub uvs: Vec<[f32; 2]>,
     /// Bone each vertex is rigidly bound to, `None` for envelope (multi-bone) vertices.
     pub vertex_bones: Vec<Option<usize>>,
+    /// Up to four (bone, weight) influences per vertex, for skinning. Rigid vertices have
+    /// one influence of weight 1.
+    pub weights: Vec<[(u16, f32); 4]>,
     /// When every vertex is bound to the same bone: that bone, plus positions and normals
     /// in its local space (for animating the mesh by moving the bone).
     pub rigid: Option<(usize, Vec<[f32; 3]>, Vec<[f32; 3]>)>,
@@ -271,12 +276,16 @@ impl Model {
         let mut bone_offsets = Vec::new();
         if let Some(g) = s_bones {
             for (bname, b) in index_group(d, g)? {
-                let mut world = [[0f32; 4]; 3];
-                for (r, row) in world.iter_mut().enumerate() {
-                    for (c, v) in row.iter_mut().enumerate() {
-                        *v = bef32(d, b + 0x70 + (r * 4 + c) * 4);
+                let mtx = |off: usize| {
+                    let mut m = [[0f32; 4]; 3];
+                    for (r, row) in m.iter_mut().enumerate() {
+                        for (c, v) in row.iter_mut().enumerate() {
+                            *v = bef32(d, b + off + (r * 4 + c) * 4);
+                        }
                     }
-                }
+                    m
+                };
+                let (world, inverse) = (mtx(0x70), mtx(0xa0));
                 bone_offsets.push(b);
                 bones.push(Bone {
                     name: bname,
@@ -285,6 +294,7 @@ impl Model {
                     rotation: v3(b + 0x2c),
                     translation: v3(b + 0x38),
                     world,
+                    inverse,
                     billboard: be32(d, b + 0x18),
                     flags: be32(d, b + 0x14),
                 });
@@ -397,6 +407,8 @@ impl Model {
 
         // Draw lists: which material and bone each object uses.
         let mut draws: Vec<(usize, usize, usize, u8, bool)> = Vec::new(); // obj, mat, bone, prio, xlu
+        // Envelope nodes: node id -> (node id of a single-bone node, weight).
+        let mut node_mix: std::collections::HashMap<u16, Vec<(u16, f32)>> = std::collections::HashMap::new();
         if let Some(g) = s_defs {
             for (dname, mut p) in index_group(d, g)? {
                 let xlu = dname == "DrawXlu";
@@ -405,7 +417,13 @@ impl Model {
                         0x00 => p += 1,
                         0x01 => break,
                         0x02 | 0x05 | 0x06 => p += 5,
-                        0x03 => p += 4 + d[p + 3] as usize * 6,
+                        0x03 => {
+                            let node = be16(d, p + 1);
+                            let n = d[p + 3] as usize;
+                            let infl = (0..n).map(|i| (be16(d, p + 4 + i * 6), bef32(d, p + 6 + i * 6))).collect();
+                            node_mix.insert(node, infl);
+                            p += 4 + n * 6;
+                        }
                         0x04 => {
                             let (mat, obj, bone) =
                                 (be16(d, p + 1) as usize, be16(d, p + 3) as usize, be16(d, p + 5) as usize);
@@ -427,7 +445,7 @@ impl Model {
                     continue; // not drawn
                 };
                 let mesh = decode_object(
-                    d, o, version, &positions, &normals, &colors, &uvs, &bones, &node_to_bone,
+                    d, o, version, &positions, &normals, &colors, &uvs, &bones, &node_to_bone, &node_mix,
                 )
                 .with_context(|| format!("{name}/{oname}"))?;
                 meshes.push(Mesh {
@@ -587,6 +605,7 @@ fn decode_object(
     uvs: &[Array],
     bones: &[Bone],
     node_to_bone: &[Option<usize>],
+    node_mix: &std::collections::HashMap<u16, Vec<(u16, f32)>>,
 ) -> Result<Mesh> {
     let single_node = be32(d, o + 8) as i32;
     let vcd = (be32(d, o + 0xc) as u64) | (be32(d, o + 0x10) as u64) << 32;
@@ -686,6 +705,20 @@ fn decode_object(
                         mesh.uvs.push([t[0], t[1]]);
                     }
                     mesh.vertex_bones.push(bone);
+                    let mut w = [(0u16, 0f32); 4];
+                    match bone {
+                        Some(b) => w[0] = (b as u16, 1.0),
+                        None => {
+                            if let Some(infl) = u16::try_from(node).ok().and_then(|n| node_mix.get(&n)) {
+                                for (slot, &(n, wt)) in w.iter_mut().zip(infl.iter()) {
+                                    if let Some(b) = node_to_bone.get(n as usize).copied().flatten() {
+                                        *slot = (b as u16, wt);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    mesh.weights.push(w);
                     local_pos.push(pos);
                     if let Some(n) = nrm {
                         local_nrm.push(n);
