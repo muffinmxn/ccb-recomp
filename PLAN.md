@@ -89,20 +89,23 @@ race; CPU attack/defence from `ki.*`; sound effects.
 
 ## What's left, in order
 
-1. **Fix mechanics that differ from the original:** lightning as a weather special (cloud over
-   a side, earthed-rod defence); sea monster parried by horizontal lines; basic ghost dies on
-   lines and drains energy; UFO abducts; weight shadow + width rule; plant climbs lines and
-   withers; ink cursor indicator. (Done: attack UI from the real attackIfc + blueprints layouts,
-   per-team slots, tracing panel, and arm-then-fire trigger: right mouse / space / fire button.)
-2. **Upgrades** (target spin + trigger) and the A/B variants of the three basic attacks.
-3. **Corncobman and Piñata** with shooting; hats, distortions and line bonuses.
-4. **Line sabotage** on the opponent's side; bomb/line interactions; rain.
-5. **Menus:** mode select, battle settings (arena, difficulty, rounds/time), player/team select,
+Done so far (1:1 from the cfg files where they say how): chick physics (jumpCond), chick faces
+(SRT0 clips), hit splash and death soul; the CPU from ki.cfg (dot-by-dot tracing, per-attack
+defence recipes, delays, wobble, cooldowns); bomb/weight/plant; the environment specials
+(cloud + lightning with earthed rods and rain, UFO beam/abduction, octopus slaps, ghost drain);
+the real attackIfc/blueprints UI with the traced line and fire trigger; the ink cursor, outlined
+line strokes, the plant hint ring; cel outlines for plant/UFO.
+
+1. **Upgrades** (target spin + trigger) and the A/B variants of the three basic attacks
+   (Frog Cracker/Ladybug Boom, Chick Fixer/Sumo, Scorpion Fern/Fire Flower) and the specials.
+2. **Corncobman and Piñata** with shooting; hats, distortions and line bonuses.
+3. **Line sabotage** on the opponent's side (blocker lines, 1.5x ink).
+4. **Menus:** mode select, battle settings (arena, difficulty, rounds/time), player/team select,
    round-over popup and stats, Chicken Coop, credits, save profiles and records, unlocks.
-6. **Tutorial:** the 4 lessons driven by the tutorial texts.
-7. **Time and Pro modes**, local multiplayer (gamepads as extra pointers).
-8. **Polish:** particles (breff), remaining TEV details (bomb stripes, >2 texture layers,
-   lighting), widescreen layout adjustment, prebuilt binaries so players don't need Rust.
+5. **Tutorial:** the 4 lessons driven by the tutorial texts.
+6. **Time and Pro modes**, local multiplayer (gamepads as extra pointers).
+7. **Polish:** particles (breff), remaining TEV details (>2 texture layers, lighting),
+   widescreen layout adjustment, prebuilt binaries so players don't need Rust.
 
 ## Legal
 
