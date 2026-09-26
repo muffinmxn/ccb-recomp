@@ -1,0 +1,11 @@
+[package]
+name = "ccb-game"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wii-formats = { path = "../wii-formats" }
+ccb-assets = { path = "../ccb-assets" }
+anyhow = "1"
+bevy = "0.19.1"
