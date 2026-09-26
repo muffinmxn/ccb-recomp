@@ -117,6 +117,8 @@ pub struct JumpCond {
     pub dir_add: f32,
     pub dir_pow: f32,
     pub dir_fac: f32,
+    /// `chickVelVariance` (0 in the shipped cfg).
+    #[allow(dead_code)]
     pub variance: f32,
     pub bounce: f32,
 }

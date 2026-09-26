@@ -35,15 +35,21 @@ impl Barrier {
         self.points.windows(2).map(|w| w[0].distance(w[1])).sum()
     }
 
+    /// Extends a line being drawn (the first point of a fresh line is a placeholder pair).
+    pub fn add_point(&mut self, p: Vec2) {
+        if self.points.len() == 2 && self.points[0] == self.points[1] {
+            self.points[1] = p;
+        } else {
+            self.points.push(p);
+        }
+        self.dirty = true;
+    }
+
     /// Axis-aligned bounds: (min, max).
     pub fn bounds(&self) -> (Vec2, Vec2) {
         self.points.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
     }
 
-    /// The highest point of the line.
-    pub fn top(&self) -> Vec2 {
-        self.points.iter().copied().fold(Vec2::new(0.0, f32::MIN), |a, p| if p.y > a.y { p } else { a })
-    }
 }
 
 /// Ink left per team.

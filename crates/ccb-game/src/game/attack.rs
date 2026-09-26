@@ -120,10 +120,6 @@ impl Attack {
         self.from.other()
     }
 
-    /// Where the attack will come down, for the CPU's defence.
-    pub fn predicted_x(&self) -> f32 {
-        self.target_x
-    }
 }
 
 fn set_transform(commands: &mut Commands, e: Option<Entity>, t: Transform) {
