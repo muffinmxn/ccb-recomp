@@ -5,6 +5,7 @@ pub mod brres;
 pub mod dol;
 pub mod gx_texture;
 pub mod lz;
+pub mod mdl0;
 pub mod tpl;
 pub mod u8arc;
 pub mod wad;
@@ -19,4 +20,8 @@ pub(crate) fn be32(b: &[u8], o: usize) -> u32 {
 
 pub(crate) fn be64(b: &[u8], o: usize) -> u64 {
     u64::from_be_bytes(b[o..o + 8].try_into().unwrap())
+}
+
+pub(crate) fn bef32(b: &[u8], o: usize) -> f32 {
+    f32::from_bits(be32(b, o))
 }

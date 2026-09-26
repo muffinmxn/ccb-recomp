@@ -9,9 +9,11 @@ pub struct Brres<'a> {
     pub data: &'a [u8],
     /// (folder, name, file bytes starting at the sub-file header)
     pub files: Vec<(String, String, &'a [u8])>,
+    /// Absolute offset of each entry in `files` within `data`.
+    pub offsets: Vec<usize>,
 }
 
-fn cstr(d: &[u8], off: usize) -> String {
+pub(crate) fn cstr(d: &[u8], off: usize) -> String {
     let s = d.get(off..).unwrap_or_default();
     let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
     String::from_utf8_lossy(&s[..end]).into_owned()
@@ -38,16 +40,27 @@ impl<'a> Brres<'a> {
         ensure!(d.len() >= 16 && &d[0..4] == b"bres", "not a BRRES file");
         let root = be16(d, 0xc) as usize;
         ensure!(&d[root..root + 4] == b"root", "BRRES root missing");
-        let mut files = Vec::new();
+        let (mut files, mut offsets) = (Vec::new(), Vec::new());
         for (folder, group) in index_group(d, root + 8)? {
             for (name, off) in index_group(d, group)? {
                 ensure!(off + 8 <= d.len(), "{folder}/{name} out of range");
                 let size = be32(d, off + 4) as usize;
                 let bytes = d.get(off..off + size).with_context(|| format!("{folder}/{name} truncated"))?;
                 files.push((folder.clone(), name, bytes));
+                offsets.push(off);
             }
         }
-        Ok(Self { data: d, files })
+        Ok(Self { data: d, files, offsets })
+    }
+
+    /// Parses the MDL0 model with the given name.
+    pub fn model(&self, name: &str) -> Result<crate::mdl0::Model> {
+        let i = self
+            .files
+            .iter()
+            .position(|f| f.0 == "3DModels(NW4R)" && f.1 == name)
+            .with_context(|| format!("no model {name}"))?;
+        crate::mdl0::Model::parse(self.data, self.offsets[i])
     }
 
     pub fn folder<'s>(&'s self, folder: &'s str) -> impl Iterator<Item = (&'s str, &'a [u8])> + 's {

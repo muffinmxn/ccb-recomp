@@ -54,7 +54,8 @@ docs/            per-subsystem reverse-engineering notes
 
 - [x] **M0 Extraction.** Decrypt WAD, verify SHA-1, unpack U8, LZ10/LZ11, find the DOL.
 - [x] **M1 Asset decoding.** cfg + msgs parsers, TPL/TEX0 decode (all GX formats incl. CMPR), PNG dump tool.
-- [ ] **M2 Models.** BRRES MDL0 → meshes (vertex arrays, display lists, materials), view the level scenes.
+- [x] **M2 Models.** BRRES MDL0 → meshes (vertex arrays, display lists, materials, pixel-engine state); every model in the game parses. `ccb-tools render` draws them on the CPU for checking.
+  - [ ] TEV stages → WGSL (needed for tinted/shadow materials); CHR0/CLR0/SRT0/VIS0 animations.
 - [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
 - [ ] **M4 2D layouts.** BRLYT panes/pictures/text, BRLAN animation, BRFNT fonts → menus and HUD.
 - [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.

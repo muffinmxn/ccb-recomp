@@ -3,6 +3,8 @@
 //! ```text
 //! ccb-tools textures [extracted] [out]   dump every TPL / BRRES texture to PNG
 //! ccb-tools brres <file.brres>           list the contents of a BRRES archive
+//! ccb-tools render <out.png> <a.brres> [b.brres ...] [--only model,model]
+//!                                        draw all models (front view) to a PNG
 //! ```
 
 use std::{
@@ -11,6 +13,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+
+mod render;
 use wii_formats::{brres, lz, tpl, u8arc};
 
 fn write_png(path: &Path, w: usize, h: usize, rgba: &[u8]) -> Result<()> {
@@ -88,7 +92,37 @@ fn main() -> Result<()> {
                 println!("{folder:18} {name:40} {:>9} bytes", bytes.len());
             }
         }
-        _ => eprintln!("usage: ccb-tools <textures|brres> ..."),
+        Some("render") => {
+            let out = args.get(1).context("usage: ccb-tools render <out.png> <brres...>")?;
+            let mut only: Option<Vec<String>> = None;
+            let mut bufs = Vec::new();
+            let mut it = args[2..].iter();
+            while let Some(a) = it.next() {
+                if a == "--only" {
+                    only = it.next().map(|s| s.split(',').map(String::from).collect());
+                } else {
+                    let raw = fs::read(a).with_context(|| a.clone())?;
+                    bufs.push(if lz::is_lz(&raw) { lz::decompress(&raw)? } else { raw });
+                }
+            }
+            let archives = bufs.iter().map(|b| brres::Brres::parse(b)).collect::<Result<Vec<_>>>()?;
+            let textures = render::texture_pool(&archives);
+            let mut models = Vec::new();
+            for b in &archives {
+                for (name, _) in b.folder("3DModels(NW4R)") {
+                    if only.as_ref().is_some_and(|o| !o.iter().any(|x| x == name)) {
+                        continue;
+                    }
+                    let m = b.model(name)?;
+                    let tris: usize = m.meshes.iter().map(|x| x.indices.len() / 3).sum();
+                    println!("{name:28} {:3} bones {:3} materials {:3} meshes {tris:6} tris", m.bones.len(), m.materials.len(), m.meshes.len());
+                    models.push(m);
+                }
+            }
+            let (w, h, rgba) = render::render(&models, &textures, 1024);
+            write_png(Path::new(out), w, h, &rgba)?;
+        }
+        _ => eprintln!("usage: ccb-tools <textures|brres|render> ..."),
     }
     Ok(())
 }

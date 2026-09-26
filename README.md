@@ -17,6 +17,9 @@ cargo run --release -p ccb-extract -- "Chick Chick BOOM (USA).wad" -o extracted
 # Dump all textures (TPL, BRRES, layout archives) to PNG:
 cargo run --release -p ccb-tools -- textures extracted extracted/png
 
+# Render a level's models to a PNG (front orthographic view) to check model parsing:
+cargo run --release -p ccb-tools -- render city.png extracted/files/0002/models/city.level1.brres --only background,left,right
+
 # List what's inside a BRRES model archive:
 cargo run --release -p ccb-tools -- brres extracted/files/0002/models/city.level1.brres
 ```
@@ -25,7 +28,7 @@ cargo run --release -p ccb-tools -- brres extracted/files/0002/models/city.level
 
 | Crate | Purpose |
 |---|---|
-| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES/TEX0, all GX texture formats |
+| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES/TEX0/MDL0, all GX texture formats |
 | `ccb-extract` | WAD → `extracted/` |
 | `ccb-assets` | the game's `cfg` tuning files and `msgs` string tables |
 | `ccb-tools` | developer dump tools |
