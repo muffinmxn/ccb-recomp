@@ -132,6 +132,18 @@ impl Material for GxMaterial {
 }
 
 impl GxMaterial {
+    /// A flat, opaque color (unlit) with the given GX cull mode.
+    pub fn flat(color: Vec4, cull: u32) -> Self {
+        let mut p = GxParams::default();
+        // One stage: color = C1, alpha = A1 (inputs 4 C1 / 2 A1, the rest zero).
+        p.info = UVec4::new(1, 7 | 7 << 3, 0, 0);
+        p.color_env[0].x = 4 | 15 << 4 | 15 << 8 | 15 << 12 | 1 << 19;
+        p.alpha_env[0].x = 7 << 4 | 7 << 7 | 7 << 10 | 2 << 13 | 1 << 19;
+        p.order[0].x = 0x1f << 16;
+        p.regs[2] = color;
+        Self { params: p, tex0: None, tex1: None, alpha_mode: AlphaMode::Opaque, key: GxKey { cull, depth_write: 1, color_write: 1 } }
+    }
+
     /// `env` flags the texture slots that use environment mapping.
     pub fn from_mdl0(mat: &mdl0::Material, translucent: bool, textures: [Option<Handle<Image>>; 2], env: [bool; 2]) -> Self {
         let pe = &mat.pixel;

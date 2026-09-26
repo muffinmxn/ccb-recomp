@@ -12,6 +12,7 @@ pub mod rfnt;
 pub mod rsar;
 pub mod tpl;
 pub mod u8arc;
+pub mod srt0;
 pub mod vis0;
 pub mod wad;
 

@@ -184,6 +184,11 @@ fn damage_chicks(chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx:
     hits
 }
 
+/// The UFO tilts into its flight direction (it faces the camera; the original doesn't spin it).
+fn ufo_tilt(dx: f32) -> Quat {
+    Quat::from_rotation_z((dx * 0.08).clamp(-0.25, 0.25))
+}
+
 /// Model scale for a weight variant `size` wide.
 fn weight_scale(assets: &GameAssets, variant: usize, size: f32) -> f32 {
     size / assets.weight_visible.get(variant.clamp(1, 6) - 1).copied().unwrap_or(1.5)
@@ -702,10 +707,11 @@ pub fn update_attacks(
                 let s = plant_scale(&assets);
                 let lunge = a.bite.map_or(0.0, |b| (b / tuning.plant_bite_time * std::f32::consts::FRAC_PI_2).sin().max(0.0) * 0.5);
                 let tip = a.pos + d * lunge;
-                let rot = Quat::from_rotation_z(f32::atan2(-d.x, d.y) * 0.6);
-                let flip = if d.x < 0.0 { -1.0 } else { 1.0 };
+                // Upright (the mouth stays level), leaning a little along the vine and turned
+                // towards its prey.
+                let rot = Quat::from_rotation_y(d.x.clamp(-1.0, 1.0) * 0.6) * Quat::from_rotation_z((-d.x * 0.25).clamp(-0.3, 0.3));
                 let snap = 1.0 + lunge * 0.3;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(tip.x, tip.y - 0.15 * s, z + 0.35).with_rotation(rot).with_scale(Vec3::new(s * flip * snap, s * snap, s)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(tip.x, tip.y - 0.15 * s, z + 0.35).with_rotation(rot).with_scale(Vec3::splat(s * snap)));
                 if died {
                     sfx.play("SFX_ATTACKS_PLANT_ROTT");
                     a.state = AttackState::Blocked;
@@ -735,7 +741,7 @@ pub fn update_attacks(
                 if a.visual.is_none() {
                     a.pos = tuning.sp.ufo_start + Vec2::X * a.origin.x.clamp(-12.0, 12.0) * 0.5;
                     a.life = rng.range(tuning.sp.ufo_attack_time);
-                    a.visual = Some(assets.spawn(&mut commands, "ufo", a.from, 3.6, &mut meshes, &mut materials, &mut images));
+                    a.visual = Some(assets.spawn_posed(&mut commands, "ufo", "ufo__look", a.from, 3.6, &mut meshes, &mut materials, &mut images));
                     sfx.play("SFX_ATTACKS_UFO_APPEAR");
                 }
                 a.victim = pick_victim(&chicks, target, a.target_x, a.victim);
@@ -748,7 +754,7 @@ pub fn update_attacks(
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(ufo_tilt(a.pos.x - a.target_x)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
             }
             (AttackKind::Ufo, AttackState::Travel) => {
                 // Beams its victim up (`ufoBeamSpeed`); a line between them breaks the beam.
@@ -800,7 +806,7 @@ pub fn update_attacks(
                 }
                 if let Some(fx) = a.effect {
                     let h = (a.pos.y - 0.6 - beam_bottom + vr * 2.0).max(0.1);
-                    commands.entity(fx).insert(Transform::from_xyz(a.pos.x, beam_bottom - vr * 2.0 + h / 2.0, z + 0.3).with_scale(Vec3::new(1.0, h / (a.pos.y - 0.6).max(0.1), 1.0)));
+                    commands.entity(fx).insert(Transform::from_xyz(a.pos.x, beam_bottom - vr * 2.0 + h / 2.0, z + 0.75).with_scale(Vec3::new(1.0, h / (a.pos.y - 0.6).max(0.1), 1.0)));
                 }
                 if a.state != AttackState::Travel {
                     if let Some(fx) = a.effect.take() {
@@ -808,7 +814,7 @@ pub fn update_attacks(
                         sfx.play("SFX_ATTACKS_UFO_DISAPPEAR");
                     }
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(ufo_tilt(a.pos.x - a.target_x)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
             }
             (AttackKind::Ufo, AttackState::Blocked) => {
                 // Beam shut down (`ufoBeamShutdownTime`), then it tries again while it has time.
@@ -821,7 +827,7 @@ pub fn update_attacks(
                     a.victim = None;
                     a.t = 0.0;
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(ufo_tilt(a.pos.x - a.target_x)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
             }
             (AttackKind::Ufo, AttackState::Impact) => {
                 // Flies away (`ufoFlyAwaySpeed`).
@@ -829,7 +835,7 @@ pub fn update_attacks(
                     commands.entity(fx).despawn();
                 }
                 a.pos += Vec2::new(0.4, 1.0) * tuning.sp.ufo_fly_away_speed * 2.0 * dt;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 5.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(ufo_tilt(-1.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
                 if a.t >= 1.8 {
                     a.state = AttackState::Finished;
                 }

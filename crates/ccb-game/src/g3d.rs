@@ -253,6 +253,28 @@ pub fn spawn_model_skinned(
             }
         }
         mesh_entities.push((m.bone, child));
+        // Cel outline: a black shell pushed out along the normals, back faces only.
+        if OUTLINED.contains(&model.name.as_str()) && !m.translucent && m.rigid.is_some() && !mat.name.contains("Inner") {
+            if let Some((_, pos, nrm)) = &m.rigid {
+                if nrm.len() == pos.len() && !pos.is_empty() {
+                    let (lo, hi) = pos.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(Vec3::from(*p)), hi.max(Vec3::from(*p))));
+                    let w = (hi - lo).length() * OUTLINE_WIDTH;
+                    let shell: Vec<[f32; 3]> = pos.iter().zip(nrm).map(|(p, n)| (Vec3::from(*p) + Vec3::from(*n).normalize_or_zero() * w).to_array()).collect();
+                    let local = mdl0::Mesh { positions: shell, normals: nrm.clone(), ..m.clone() };
+                    let hull = commands
+                        .spawn((
+                            Name::new(format!("{}/{}/outline", model.name, m.name)),
+                            Mesh3d(meshes.add(build_mesh(&local))),
+                            MeshMaterial3d(materials.add(GxMaterial::flat(Vec4::new(0.0, 0.0, 0.0, 1.0), 1))),
+                            Transform::default(),
+                            if visible { Visibility::Inherited } else { Visibility::Hidden },
+                        ))
+                        .id();
+                    commands.entity(owner).add_child(hull);
+                    mesh_entities.push((m.bone, hull));
+                }
+            }
+        }
     }
     commands.entity(root).insert(ModelInstance {
         bone_names: model.bones.iter().map(|b| b.name.clone()).collect(),
@@ -263,6 +285,11 @@ pub fn spawn_model_skinned(
     });
     root
 }
+
+/// Models drawn with a black cel outline shell (the game's 2D art outlines them; these
+/// models carry none of their own), and its width relative to each mesh's size.
+const OUTLINED: &[&str] = &["plant", "ufo"];
+const OUTLINE_WIDTH: f32 = 0.025;
 
 /// A bone that turns to face the camera every frame (MDL0 billboard modes).
 #[derive(Component)]
