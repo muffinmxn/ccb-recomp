@@ -235,6 +235,95 @@ impl GameAssets {
         e
     }
 
+    /// Spawns a model and applies a one-frame pose clip.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_posed(
+        &self,
+        commands: &mut Commands,
+        name: &str,
+        clip: &str,
+        team: Team,
+        width: f32,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<GxMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Entity {
+        let e = self.spawn(commands, name, team, width, meshes, materials, images);
+        self.play(commands, e, clip);
+        e
+    }
+
+    /// Plays a bone animation clip on a spawned model.
+    pub fn play(&self, commands: &mut Commands, model: Entity, clip: &str) {
+        if let Some(c) = self.clips.iter().find(|c| c.name == clip) {
+            commands.entity(model).insert(BoneAnimator::new(vec![c.clone()]));
+        }
+    }
+
+    /// Spawns the weight posed as one of its variants (`weight__weightDefault0N`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_weight(
+        &self,
+        commands: &mut Commands,
+        variant: usize,
+        team: Team,
+        width: f32,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<GxMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Entity {
+        let e = self.spawn(commands, "weight", team, width, meshes, materials, images);
+        let name = format!("weight__weightDefault0{}", variant.clamp(1, 6));
+        if let Some(c) = self.clips.iter().find(|c| c.name == name) {
+            commands.entity(e).insert(BoneAnimator::new(vec![c.clone()]));
+        }
+        e
+    }
+
+    /// A translucent vertical beam (UFO tractor beam).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_beam(&self, commands: &mut Commands, x: f32, bottom: f32, top: f32, z: f32, width: f32, color: Vec4, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> Entity {
+        let h = (top - bottom).max(0.1);
+        let mut mat = super::barrier::solid_material(color);
+        mat.params.konst[3].w = color.w;
+        commands
+            .spawn((
+                Mesh3d(meshes.add(Rectangle::new(width, h))),
+                MeshMaterial3d(materials.add(mat)),
+                Transform::from_xyz(x, bottom + h / 2.0, z + 0.3),
+                DespawnOnExit(Screen::Level),
+            ))
+            .id()
+    }
+
+    /// A soft dark ellipse lying on the ground (a falling weight's shadow); scale x for width.
+    pub fn spawn_shadow(&self, commands: &mut Commands, z: f32, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> Entity {
+        let mut mat = super::barrier::solid_material(Vec4::new(0.0, 0.0, 0.0, 0.35));
+        mat.params.konst[3].w = 0.35;
+        commands
+            .spawn((
+                Mesh3d(meshes.add(Ellipse::new(0.5, 0.5))),
+                MeshMaterial3d(materials.add(mat)),
+                Transform::from_xyz(0.0, 0.03, z),
+                DespawnOnExit(Screen::Level),
+            ))
+            .insert(Transform::from_xyz(0.0, 0.03, z).with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)))
+            .id()
+    }
+
+    /// A plant's vine ribbon (its mesh is replaced as it grows).
+    pub fn spawn_stem(&self, commands: &mut Commands, z: f32, color: Vec4, materials: &mut Assets<GxMaterial>) -> Entity {
+        commands
+            .spawn((
+                MeshMaterial3d(materials.add(super::barrier::solid_material(color))),
+                Transform::from_xyz(0.0, 0.0, z),
+                Visibility::default(),
+                bevy::camera::visibility::NoFrustumCulling,
+                DespawnOnExit(Screen::Level),
+            ))
+            .id()
+    }
+
     /// Model-space width of the meshes on a bone.
     pub fn bone_width(&self, name: &str, bone: &str) -> f32 {
         let Some(model) = self.models.get(name) else { return 1.0 };
