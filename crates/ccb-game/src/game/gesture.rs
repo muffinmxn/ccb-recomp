@@ -5,14 +5,15 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use bevy::{camera::visibility::RenderLayers, prelude::*};
+use bevy::prelude::*;
 
-use super::{flow::Match, tuning::Tuning, AttackKind, Team};
-use crate::{
-    gx_material::GxMaterial,
-    layout::{LayoutAssets, UI_LAYER},
-    pointer::Pointer,
+use super::{
+    attack_ui::{IfcView, Mode, CANCEL_POS, CONFIRM_POS},
+    flow::Match,
+    tuning::Tuning,
+    AttackKind, Team,
 };
+use crate::{layout::LayoutAssets, pointer::Pointer};
 
 /// Control-point paths per attack, in layout units relative to the panel center.
 #[derive(Resource)]
@@ -52,38 +53,10 @@ pub struct Trace {
     times: Vec<f32>,
     clock: f32,
     started: bool,
-    sprites: Vec<Entity>,
+    /// Traced and waiting for the trigger: quality.
+    armed: Option<f32>,
 }
 
-#[derive(Component)]
-pub struct GestureSprite;
-
-/// Spawns a centered UI sprite of `size` layout units.
-#[allow(clippy::too_many_arguments)]
-pub fn ui_sprite(
-    commands: &mut Commands,
-    assets: &mut LayoutAssets,
-    texture: &str,
-    center: Vec2,
-    size: Vec2,
-    z: f32,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<GxMaterial>,
-    images: &mut Assets<Image>,
-) -> Entity {
-    let (mesh, mat) = assets.sprite(texture, meshes, materials, images);
-    commands
-        .spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(center.x - size.x / 2.0, center.y + size.y / 2.0, z).with_scale(size.extend(1.0)),
-            RenderLayers::layer(UI_LAYER),
-            DespawnOnExit(crate::Screen::Level),
-        ))
-        .id()
-}
-
-/// Quality of a finished trace: per-dot speed and total time, per `ingame.model.gesture`.
 pub fn trace_quality(times: &[f32], dots: usize, timing: [f32; 5]) -> f32 {
     let [total_best, total_worst, dot_best, dot_worst, dot_min] = timing;
     if times.len() < 2 || dots < 2 {
@@ -104,49 +77,56 @@ pub fn trace_quality(times: &[f32], dots: usize, timing: [f32; 5]) -> f32 {
     ((0.5 * mean + 0.5 * total_q) * progress).clamp(0.0, 1.0)
 }
 
+/// The player's gesture: trace the dots in the panel (the red X cancels before starting),
+/// then fire with the trigger (right mouse / space, or the fire button).
 #[allow(clippy::too_many_arguments)]
 pub fn player_gesture(
-    mut commands: Commands,
     time: Res<Time>,
     pointer: Res<Pointer>,
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     tuning: Res<Tuning>,
     gestures: Res<Gestures>,
     mut m: ResMut<Match>,
     mut trace: ResMut<Trace>,
-    mut assets: ResMut<LayoutAssets>,
-    mut transforms: Query<&mut Transform, With<GestureSprite>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GxMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    mut view: ResMut<IfcView>,
     mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
-    let panel = tuning.gesture_panel[Team::Yellow.index()];
-    // Start a new trace when an attack is selected.
+    let Some(team) = view.player else { return };
+    let mirror = if team == Team::Yellow { 1.0 } else { -1.0 };
+    let panel = tuning.gesture_panel[team.index()];
     if m.selected != trace.kind {
-        for e in trace.sprites.drain(..) {
-            commands.entity(e).despawn();
-        }
         *trace = Trace { kind: m.selected, ..default() };
         if let Some(kind) = m.selected {
-            // The red cancel button sits at the panel's lower right, as in the blueprint layout.
-            let cancel = ui_sprite(&mut commands, &mut assets, "attack_cancelBtn.tpl", panel + Vec2::new(85.0, -53.0), Vec2::new(51.0, 50.0), 300.0, &mut meshes, &mut materials, &mut images);
-            commands.entity(cancel).insert(GestureSprite);
-            trace.sprites.push(cancel);
-            let dots: Vec<Vec2> = gestures.0.get(&kind).cloned().unwrap_or_default().into_iter().map(|p| panel + p).collect();
-            for (i, d) in dots.iter().enumerate() {
-                let s = ui_sprite(&mut commands, &mut assets, "ifcAttackDotB.tpl", *d, Vec2::splat(16.0), 301.0 + i as f32 * 0.01, &mut meshes, &mut materials, &mut images);
-                commands.entity(s).insert(GestureSprite);
-                trace.sprites.push(s);
-            }
-            trace.dots = dots;
+            trace.dots = gestures.0.get(&kind).cloned().unwrap_or_default().into_iter().map(|p| panel + p).collect();
         }
     }
-    let Some(kind) = trace.kind else { return };
-    let on_cancel = pointer.pos.is_some_and(|p| p.distance(panel + Vec2::new(85.0, -53.0)) < 25.0);
-    if buttons.just_pressed(MouseButton::Right) || (pointer.just_pressed && on_cancel && !trace.started) {
+    let Some(kind) = trace.kind else {
+        view.mode[team.index()] = Mode::Idle;
+        return;
+    };
+    let fire_btn = panel + CONFIRM_POS * Vec2::new(mirror, 1.0);
+    if let Some(q) = trace.armed {
+        view.mode[team.index()] = Mode::Armed { kind, quality: q };
+        let clicked = pointer.just_pressed && pointer.pos.is_some_and(|p| p.distance(fire_btn) < 36.0);
+        // Out of turn time: the traced attack goes off by itself.
+        let timeout = kind.is_basic() && m.phase == super::flow::Phase::Attack && m.turn_timer < 0.2;
+        if buttons.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::Space) || clicked || timeout {
+            if kind.is_basic() {
+                m.pending = Some((kind, q));
+            } else {
+                m.pending_special = Some((team, kind, q));
+            }
+            m.selected = None;
+        }
+        return;
+    }
+    let cancel_btn = panel + CANCEL_POS * Vec2::new(mirror, 1.0);
+    let on_cancel = pointer.pos.is_some_and(|p| p.distance(cancel_btn) < 25.0);
+    if pointer.just_pressed && on_cancel && !trace.started {
         sfx.play("SFX_ATTACK_IFC_DRAWING_CANCELLED");
         m.selected = None;
+        view.mode[team.index()] = Mode::Idle;
         return;
     }
     trace.clock += time.delta_secs();
@@ -161,18 +141,11 @@ pub fn player_gesture(
             trace.times.push(c);
         }
     }
-    // Reached dots shrink; the next one pulses.
-    let pulse = 1.0 + 0.35 * (trace.clock * 8.0).sin().abs();
-    for (i, d) in trace.dots.clone().iter().enumerate() {
-        if let Ok(mut t) = transforms.get_mut(trace.sprites[i + 1]) {
-            let size = if i < trace.next { 8.0 } else if i == trace.next { 16.0 * pulse } else { 16.0 };
-            *t = Transform::from_xyz(d.x - size / 2.0, d.y + size / 2.0, t.translation.z).with_scale(Vec3::new(size, size, 1.0));
-        }
-    }
+    let q = trace_quality(&trace.times, trace.dots.len(), tuning.gesture_timing);
+    view.mode[team.index()] = Mode::Tracing { kind, done: trace.next, quality: q };
     let finished = trace.next == trace.dots.len() && !trace.dots.is_empty();
     let released = trace.started && !pointer.pressed;
     if finished || released {
-        let q = trace_quality(&trace.times, trace.dots.len(), tuning.gesture_timing);
         info!("gesture {kind:?}: {}/{} dots, quality {:.0}%", trace.next, trace.dots.len(), q * 100.0);
         sfx.play(if !finished {
             "SFX_ATTACK_IFC_DRAWING_INTERRUPTED"
@@ -181,12 +154,8 @@ pub fn player_gesture(
         } else {
             "SFX_ATTACK_IFC_DRAWING_SUCCESS"
         });
-        if kind.is_basic() {
-            m.pending = Some((kind, q));
-        } else {
-            m.pending_special = Some((Team::Yellow, kind, q));
-        }
-        m.selected = None;
+        trace.armed = Some(q);
+        view.mode[team.index()] = Mode::Armed { kind, quality: q };
     }
 }
 

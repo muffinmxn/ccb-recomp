@@ -32,6 +32,16 @@ impl Barrier {
     pub fn length(&self) -> f32 {
         self.points.windows(2).map(|w| w[0].distance(w[1])).sum()
     }
+
+    /// Axis-aligned bounds: (min, max).
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        self.points.iter().fold((Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
+    }
+
+    /// The highest point of the line.
+    pub fn top(&self) -> Vec2 {
+        self.points.iter().copied().fold(Vec2::new(0.0, f32::MIN), |a, p| if p.y > a.y { p } else { a })
+    }
 }
 
 /// Ink left per team.
@@ -54,7 +64,7 @@ pub fn solid_material(color: Vec4) -> GxMaterial {
 }
 
 /// Builds a ribbon mesh along the barrier's points.
-fn ribbon(points: &[Vec2], thickness: f32) -> Mesh {
+pub(super) fn ribbon(points: &[Vec2], thickness: f32) -> Mesh {
     let mut pos = Vec::new();
     let mut idx = Vec::new();
     for (i, p) in points.iter().enumerate() {
@@ -281,4 +291,30 @@ pub fn vertical_block(barriers: &Query<(Entity, &mut Barrier)>, team: Team, x: f
         }
     }
     best
+}
+
+/// First barrier of `team` crossed by the segment `a`–`b` (closest to `a`): the crossing point,
+/// the index of the barrier segment it crosses and the barrier entity.
+pub fn segment_hit(barriers: &Query<(Entity, &mut Barrier)>, team: Team, a: Vec2, b: Vec2) -> Option<(Vec2, usize, Entity)> {
+    let mut best: Option<(f32, Vec2, usize, Entity)> = None;
+    let r = b - a;
+    for (e, bar) in barriers.iter() {
+        if bar.team != team {
+            continue;
+        }
+        for (i, w) in bar.points.windows(2).enumerate() {
+            let (p, q) = (w[0], w[1]);
+            let s = q - p;
+            let den = r.perp_dot(s);
+            if den.abs() < 1e-6 {
+                continue;
+            }
+            let t = (p - a).perp_dot(s) / den;
+            let u = (p - a).perp_dot(r) / den;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) && best.is_none_or(|x| t < x.0) {
+                best = Some((t, a + r * t, i, e));
+            }
+        }
+    }
+    best.map(|(_, p, i, e)| (p, i, e))
 }

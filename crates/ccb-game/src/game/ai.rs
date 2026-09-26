@@ -10,6 +10,7 @@ use super::{
     gesture::Gestures,
     rng::Rng,
     tuning::{Tuning, DIFFICULTY},
+    attack_ui::{IfcView, Mode},
     AttackKind, Team,
 };
 use crate::{data::GameData, gx_material::GxMaterial};
@@ -27,6 +28,11 @@ struct Side {
     drawing: Option<(AttackKind, f32, f32)>,
     defended: Option<Entity>,
     defend_at: f32,
+    /// Total time of the current drawing / special tracing (for the panel's progress).
+    drawing_total: f32,
+    special_total: f32,
+    /// Traced and about to fire: (attack, quality, seconds left).
+    armed: Option<(AttackKind, f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +89,11 @@ impl Cpu {
     }
 }
 
+/// How long the CPU shows a traced attack before firing (`CCB_CPU_ARM_TIME` overrides).
+fn arm_time() -> f32 {
+    std::env::var("CCB_CPU_ARM_TIME").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5)
+}
+
 /// Seconds until an attack reaches the defender's barrier height.
 fn eta(a: &Attack, tuning: &Tuning) -> f32 {
     match (a.kind, a.state) {
@@ -112,6 +123,7 @@ pub fn cpu_turn(
     mut cpu: ResMut<Cpu>,
     mut rng: ResMut<Rng>,
     mut ink: ResMut<Ink>,
+    mut view: ResMut<IfcView>,
     attacks: Query<(Entity, &Attack)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
@@ -140,13 +152,13 @@ pub fn cpu_turn(
                         let modifier = ki.draw_modifier.get(kind as usize).copied().unwrap_or(1.0);
                         let quality = (rng.range(ki.quality) * modifier).clamp(0.05, 1.0);
                         side.drawing = Some((kind, duration, quality));
+                        side.drawing_total = duration;
                     }
                 }
                 Some((kind, left, quality)) => {
                     let left = left - dt;
                     if left <= 0.0 {
-                        info!("cpu ({team:?}) attacks with {kind:?} at {:.0}%", quality * 100.0);
-                        m.pending = Some((kind, quality));
+                        side.armed = Some((kind, quality, arm_time()));
                         side.drawing = None;
                         side.think = 0.0;
                     } else {
@@ -157,6 +169,23 @@ pub fn cpu_turn(
         } else if m.attacker != team {
             side.drawing = None;
         }
+        // A traced attack sits on its platform for a moment, then fires.
+        if let Some((kind, quality, left)) = side.armed {
+            let left = left - dt;
+            if left > 0.0 {
+                side.armed = Some((kind, quality, left));
+            } else {
+                side.armed = None;
+                if kind.is_basic() {
+                    if m.phase == Phase::Attack && m.attacker == team && m.pending.is_none() {
+                        info!("cpu ({team:?}) attacks with {kind:?} at {:.0}%", quality * 100.0);
+                        m.pending = Some((kind, quality));
+                    }
+                } else if m.pending_special.is_none() && m.special.is_some_and(|(k, _)| k == kind) {
+                    m.pending_special = Some((team, kind, quality));
+                }
+            }
+        }
 
         // ---- racing for an open special
         match (m.special, side.special) {
@@ -166,12 +195,13 @@ pub fn cpu_turn(
                 let duration = rng.range(ki.start_reaction) + dots * rng.range(ki.draw_skill_time) * 3.5;
                 let quality = rng.range(ki.quality).clamp(0.05, 1.0);
                 side.special = Some((kind, duration, quality));
+                side.special_total = duration;
             }
             (Some((open, _)), Some((kind, left, quality))) if open == kind => {
                 let left = left - dt;
                 if left <= 0.0 {
-                    if m.pending_special.is_none() {
-                        m.pending_special = Some((team, kind, quality));
+                    if side.armed.is_none() {
+                        side.armed = Some((kind, quality, 0.35));
                     }
                     side.special = None;
                 } else {
@@ -181,6 +211,17 @@ pub fn cpu_turn(
             (None, Some(_)) => side.special = None,
             _ => {}
         }
+        // What this side's attack interface shows.
+        let dots = |k: AttackKind| gestures.dots(k);
+        view.mode[team.index()] = if let Some((kind, quality, _)) = side.armed {
+            Mode::Armed { kind, quality }
+        } else if let Some((kind, left, quality)) = side.drawing.or(side.special) {
+            let total = if side.drawing.is_some() { side.drawing_total } else { side.special_total };
+            let k = (1.0 - left / total.max(1e-3)).clamp(0.0, 1.0);
+            Mode::Tracing { kind, done: (k * dots(kind) as f32) as usize, quality: quality * k }
+        } else {
+            Mode::Idle
+        };
 
         // ---- defending
         let Some((ae, a)) = attacks.iter().find(|(_, a)| a.target() == team) else { continue };

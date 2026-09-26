@@ -29,6 +29,8 @@ pub struct Chick {
     pub scale: f32,
     pub max_health: f32,
     pub radius: f32,
+    /// Taken by a UFO: floats up into it instead of fading away.
+    pub abducted: bool,
 }
 
 impl Chick {
@@ -119,6 +121,7 @@ pub fn spawn_chick(
             health: tuning.chick_health * health,
             max_health: tuning.chick_health * health,
             radius,
+            abducted: false,
             pos: Vec2::new(x, y),
             vel: Vec2::ZERO,
             on_ground: false,
@@ -147,9 +150,10 @@ pub fn move_chicks(
             let d = d - dt / tuning.chick_dying_time.max(0.1);
             c.dying = Some(d);
             // Float up and shrink away.
-            c.pos.y += dt * 2.5;
+            c.pos.y += dt * if c.abducted { 4.0 } else { 2.5 };
             t.translation = Vec3::new(c.pos.x, c.pos.y, tuning.plane_z);
-            t.scale = Vec3::splat(c.scale * d.max(0.01));
+            let shrink = if c.abducted { (d * 2.5).min(1.0) } else { d };
+            t.scale = Vec3::splat(c.scale * shrink.max(0.01));
             if d <= 0.0 {
                 commands.entity(e).despawn();
             }

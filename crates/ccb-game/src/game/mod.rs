@@ -11,6 +11,7 @@
 
 pub mod ai;
 pub mod attack;
+pub mod attack_ui;
 pub mod barrier;
 pub mod chick;
 pub mod flow;
@@ -121,7 +122,8 @@ impl Plugin for GamePlugin {
                 (
                     flow::run_match,
                     gesture::player_gesture,
-                    flow::player_attack_buttons,
+                    attack_ui::update_attack_ifc,
+                    attack_ui::update_blueprints,
                     ai::cpu_turn,
                     barrier::player_draw_barrier,
                     barrier::update_barriers,

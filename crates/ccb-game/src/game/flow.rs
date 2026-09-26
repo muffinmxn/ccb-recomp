@@ -11,7 +11,7 @@ use super::{
     attack::Attack,
     barrier::Ink,
     chick::{spawn_chick, Chick, ChickAssets},
-    gesture::{ui_sprite, Gestures, Trace},
+    gesture::{Gestures, Trace},
     rng::Rng,
     tuning::Tuning,
     AttackKind, Team,
@@ -23,7 +23,6 @@ use crate::{
     gx_material::GxMaterial,
     hud::Hud,
     layout::{self, LayoutAnimator, LayoutAssets, LayoutPane, LayoutRoot, TextPane},
-    pointer::Pointer,
     Screen,
 };
 
@@ -235,28 +234,6 @@ impl GameAssets {
     }
 }
 
-/// An attack button on the player's attack interface.
-#[derive(Component)]
-pub struct AttackButton {
-    pub kind: AttackKind,
-    pub center: Vec2,
-    pub size: f32,
-    /// Icon size relative to the button.
-    pub icon_scale: f32,
-}
-
-fn button_icon(kind: AttackKind) -> &'static str {
-    match kind {
-        AttackKind::Bomb => "attackInterface_btn_bombe.tpl",
-        AttackKind::Weight => "attackInterface_btn_gewicht.tpl",
-        AttackKind::Plant => "attackInterface_btn_pflanze.tpl",
-        AttackKind::Ufo => "attackInterface_icon_ufo.tpl",
-        AttackKind::Lightning => "attackInterface_icon_lightning.tpl",
-        AttackKind::Ghost => "attackInterface_icon_ghost.tpl",
-        AttackKind::Octopus | AttackKind::Mushroom => "attackInterface_icon_octopus.tpl",
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn start_match(
     mut commands: Commands,
@@ -311,33 +288,10 @@ pub fn start_match(
 
         spawn_teams(&mut commands, root, &chick_assets, &tuning, &mut rng, &mut meshes, &mut materials, &mut images);
 
-        // The player's attack interface, laid out like the original's 1P screen: the three
-        // basic attacks as round buttons bottom right, the level's special on the blue arc
-        // above them, and the gesture panel bottom left.
-        let special = available.iter().copied().find(|k| !k.is_basic() && k.implemented());
-        let basics: Vec<AttackKind> = [AttackKind::Bomb, AttackKind::Weight, AttackKind::Plant].into_iter().filter(|k| available.contains(k)).collect();
-        for (i, kind) in basics.iter().enumerate() {
-            let center = Vec2::new(101.0 + 67.0 * i as f32, -158.0);
-            let bg = ui_sprite(&mut commands, &mut lyt, "attackInterface_btnBg.tpl", center, Vec2::splat(64.0), 250.0, &mut meshes, &mut materials, &mut images);
-            let icon = ui_sprite(&mut commands, &mut lyt, button_icon(*kind), center, Vec2::splat(64.0), 251.0, &mut meshes, &mut materials, &mut images);
-            commands.entity(bg).insert(AttackButton { kind: *kind, center, size: 64.0, icon_scale: 1.0 });
-            commands.entity(icon).insert(AttackButtonIcon(bg));
-        }
-        if let Some(kind) = special {
-            let center = Vec2::new(170.0, -92.0);
-            let theme = level.split('.').next().unwrap_or("city");
-            let arc = match theme {
-                "ship" => "attackInterface_special_shipLvl.tpl",
-                "graveyard" => "attackInterface_special_ghostLvl.tpl",
-                _ => "attackInterface_special_cityLvl.tpl",
-            };
-            let bg = ui_sprite(&mut commands, &mut lyt, arc, center, Vec2::new(110.0, 58.0), 250.0, &mut meshes, &mut materials, &mut images);
-            let icon = ui_sprite(&mut commands, &mut lyt, button_icon(kind), center + Vec2::new(0.0, 4.0), Vec2::new(56.0, 46.0), 251.0, &mut meshes, &mut materials, &mut images);
-            commands.entity(bg).insert(AttackButton { kind, center, size: 58.0, icon_scale: 0.8 });
-            commands.entity(icon).insert(AttackButtonIcon(bg));
-        }
-        let panel = tuning.gesture_panel[Team::Yellow.index()];
-        ui_sprite(&mut commands, &mut lyt, "attackInterface_btnBg.tpl", panel, Vec2::splat(176.0), 240.0, &mut meshes, &mut materials, &mut images);
+        // Both teams' attack interfaces (the original's attackIfc + blueprints layouts).
+        super::attack_ui::spawn(&mut commands, &mut lyt, &tuning, &mut meshes, &mut materials, &mut images)?;
+        let player = if std::env::var("CCB_AUTOPLAY").is_ok() { None } else { Some(Team::Yellow) };
+        commands.insert_resource(super::attack_ui::IfcView { player, ..default() });
 
         let first = if rng.chance(0.5) { Team::Yellow } else { Team::Black };
         let side = if first == Team::Yellow { "Yellow" } else { "Black" };
@@ -396,10 +350,6 @@ fn spawn_teams(
         }
     }
 }
-
-/// Icon sprite belonging to an attack button (dimmed with it).
-#[derive(Component)]
-pub struct AttackButtonIcon(pub Entity);
 
 /// `CCB_SHOWCASE=1`: places every attack model on the field (for checking visuals).
 pub fn showcase(
@@ -618,63 +568,6 @@ pub fn run_match(
             if t + dt > 6.0 {
                 next.set(Screen::Arenas);
             }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn player_attack_buttons(
-    time: Res<Time>,
-    pointer: Res<Pointer>,
-    mut m: ResMut<Match>,
-    buttons: Query<(Entity, &AttackButton)>,
-    icons: Query<(Entity, &AttackButtonIcon)>,
-    mut transforms: Query<(&mut Transform, &MeshMaterial3d<GxMaterial>)>,
-    mut materials: ResMut<Assets<GxMaterial>>,
-    mut hover: Local<HashMap<Entity, f32>>,
-    mut sfx: ResMut<crate::sfx::Sfx>,
-) {
-    let my_turn = m.phase == Phase::Attack && m.attacker == Team::Yellow && m.pending.is_none();
-    for (e, b) in &buttons {
-        let usable = if b.kind.is_basic() {
-            my_turn && b.kind.implemented() && m.selected.is_none()
-        } else {
-            // Specials can be traced whenever their window is open, even off-turn.
-            m.special.is_some_and(|(k, _)| k == b.kind) && m.selected.is_none()
-        };
-        let over = pointer.pos.is_some_and(|p| p.distance(b.center) < b.size * 0.5);
-        let h = hover.entry(e).or_insert(0.0);
-        if over && usable && *h == 0.0 {
-            sfx.play("SFX_ATTACK_IFC_SELECTOR_ROLLOVER");
-        }
-        *h = (*h + if over && usable { 10.0 } else { -10.0 } * time.delta_secs()).clamp(0.0, 1.0);
-        let grow = (1.0 + 0.1 * *h) * if m.selected == Some(b.kind) { 1.12 } else { 1.0 };
-        // Out of turn the icons grey out (the background stays solid).
-        let icon_alpha = if usable || m.selected == Some(b.kind) { 1.0 } else { 0.45 };
-        let mut apply = |ent: Entity, alpha: f32, icon: bool| {
-            if let Ok((mut t, mat)) = transforms.get_mut(ent) {
-                let s = t.scale.truncate() / t.scale.y.max(1e-3); // keep aspect
-                let base = if icon { b.size * b.icon_scale } else { b.size };
-                let size = Vec2::new(base * s.x, base) * grow;
-                let off = if icon && b.icon_scale < 1.0 { 4.0 } else { 0.0 };
-                *t = Transform::from_xyz(b.center.x - size.x / 2.0, b.center.y + off + size.y / 2.0, t.translation.z).with_scale(size.extend(1.0));
-                if let Some(mut mm) = materials.get_mut(&mat.0) {
-                    if mm.params.konst[3].w != alpha {
-                        mm.params.konst[3].w = alpha;
-                    }
-                }
-            }
-        };
-        apply(e, 1.0, false);
-        for (ie, icon) in &icons {
-            if icon.0 == e {
-                apply(ie, icon_alpha, true);
-            }
-        }
-        if over && usable && pointer.just_pressed {
-            info!("player selects {:?}", b.kind);
-            sfx.play("SFX_ATTACK_IFC_SELECTOR_ACTIVATED");
-            m.selected = Some(b.kind);
         }
     }
 }

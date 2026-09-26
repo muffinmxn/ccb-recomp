@@ -92,7 +92,8 @@ race; CPU attack/defence from `ki.*`; sound effects.
 1. **Fix mechanics that differ from the original:** lightning as a weather special (cloud over
    a side, earthed-rod defence); sea monster parried by horizontal lines; basic ghost dies on
    lines and drains energy; UFO abducts; weight shadow + width rule; plant climbs lines and
-   withers; trigger (B / right mouse) to launch after tracing; ink cursor indicator.
+   withers; ink cursor indicator. (Done: attack UI from the real attackIfc + blueprints layouts,
+   per-team slots, tracing panel, and arm-then-fire trigger: right mouse / space / fire button.)
 2. **Upgrades** (target spin + trigger) and the A/B variants of the three basic attacks.
 3. **Corncobman and Piñata** with shooting; hats, distortions and line bonuses.
 4. **Line sabotage** on the opponent's side; bomb/line interactions; rain.
