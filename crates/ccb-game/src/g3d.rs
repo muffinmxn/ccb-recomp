@@ -127,6 +127,8 @@ pub struct ModelInstance {
     pub bone_visible: Vec<bool>,
     /// (draw bone, mesh entity) for every spawned mesh.
     pub meshes: Vec<(usize, Entity)>,
+    /// Material name of each entry in `meshes`.
+    pub mesh_materials: Vec<String>,
 }
 
 pub fn bone_transform(s: [f32; 3], r_deg: [f32; 3], t: [f32; 3]) -> Transform {
@@ -203,6 +205,7 @@ pub fn spawn_model_skinned(
     let bone_visible: Vec<bool> = model.bones.iter().map(|b| b.flags & 0x100 != 0).collect();
     // Skinned (envelope) meshes deform with the bones via `inverse_binds` (see [`inverse_binds`]).
     let mut mesh_entities = Vec::new();
+    let mut mesh_materials = Vec::new();
     for m in &model.meshes {
         let Some(mat) = model.materials.get(m.material) else { continue };
         let Some(mut material) = build_material(mat, m.translucent, textures, images) else { continue };
@@ -253,6 +256,7 @@ pub fn spawn_model_skinned(
             }
         }
         mesh_entities.push((m.bone, child));
+        mesh_materials.push(mat.name.clone());
         // Cel outline: a black shell pushed out along the normals, back faces only.
         if OUTLINED.contains(&model.name.as_str()) && !m.translucent && m.rigid.is_some() && !mat.name.contains("Inner") {
             if let Some((_, pos, nrm)) = &m.rigid {
@@ -272,6 +276,7 @@ pub fn spawn_model_skinned(
                         .id();
                     commands.entity(owner).add_child(hull);
                     mesh_entities.push((m.bone, hull));
+                    mesh_materials.push(String::new());
                 }
             }
         }
@@ -282,6 +287,7 @@ pub fn spawn_model_skinned(
         bind: model.bones.iter().map(|b| [b.scale, b.rotation, b.translation]).collect(),
         bone_visible,
         meshes: mesh_entities,
+        mesh_materials,
     });
     root
 }

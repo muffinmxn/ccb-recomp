@@ -132,6 +132,18 @@ impl Material for GxMaterial {
 }
 
 impl GxMaterial {
+    /// A textured, blended sprite; `konst[3].w` fades it.
+    pub fn sprite(texture: Handle<Image>) -> Self {
+        let mut p = GxParams::default();
+        p.info = UVec4::new(1, 7 | 7 << 3, 0, 0);
+        // color = TEXC; alpha = TEXA * KONST (K3_A).
+        p.color_env[0].x = 8 | 15 << 4 | 15 << 8 | 15 << 12 | 1 << 19;
+        p.alpha_env[0].x = 7 << 4 | 6 << 7 | 4 << 10 | 7 << 13 | 1 << 19;
+        p.order[0].x = 1 << 4 | 7 << 5 | 0x1f << 16;
+        p.konst[3] = Vec4::ONE;
+        Self { params: p, tex0: Some(texture), tex1: None, alpha_mode: AlphaMode::Blend, key: GxKey { cull: 0, depth_write: 0, color_write: 1 } }
+    }
+
     /// A flat, opaque color (unlit) with the given GX cull mode.
     pub fn flat(color: Vec4, cull: u32) -> Self {
         let mut p = GxParams::default();

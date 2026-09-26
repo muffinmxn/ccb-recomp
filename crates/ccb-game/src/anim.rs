@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
 use bevy::prelude::*;
-use wii_formats::{brres::Brres, chr0::Chr0, vis0::Vis0};
+use wii_formats::{brres::Brres, chr0::Chr0, srt0::Srt0, vis0::Vis0};
 
 use crate::g3d::{bone_transform, ModelInstance};
 
@@ -18,15 +18,17 @@ pub struct Clip {
     pub name: String,
     pub chr: Option<Chr0>,
     pub vis: Option<Vis0>,
+    /// Texture matrix tracks (e.g. the chick's face atlas cell).
+    pub srt: Option<Srt0>,
 }
 
 impl Clip {
     pub fn frames(&self) -> u16 {
-        self.chr.as_ref().map(|c| c.frames).or(self.vis.as_ref().map(|v| v.frames)).unwrap_or(1)
+        self.chr.as_ref().map(|c| c.frames).or(self.vis.as_ref().map(|v| v.frames)).or(self.srt.as_ref().map(|s| s.frames)).unwrap_or(1)
     }
 
     pub fn looping(&self) -> bool {
-        self.chr.as_ref().map(|c| c.looping).or(self.vis.as_ref().map(|v| v.looping)).unwrap_or(false)
+        self.chr.as_ref().map(|c| c.looping).or(self.vis.as_ref().map(|v| v.looping)).or(self.srt.as_ref().map(|s| s.looping)).unwrap_or(false)
     }
 }
 
@@ -35,11 +37,15 @@ pub fn load_clips(b: &Brres) -> Result<Vec<Arc<Clip>>> {
     let mut map: HashMap<String, Clip> = HashMap::new();
     for c in b.bone_animations()? {
         let name = c.name.clone();
-        map.entry(name.clone()).or_insert_with(|| Clip { name, chr: None, vis: None }).chr = Some(c);
+        map.entry(name.clone()).or_insert_with(|| Clip { name, chr: None, vis: None, srt: None }).chr = Some(c);
     }
     for v in b.vis_animations()? {
         let name = v.name.clone();
-        map.entry(name.clone()).or_insert_with(|| Clip { name, chr: None, vis: None }).vis = Some(v);
+        map.entry(name.clone()).or_insert_with(|| Clip { name, chr: None, vis: None, srt: None }).vis = Some(v);
+    }
+    for t in b.srt_animations()? {
+        let name = t.name.clone();
+        map.entry(name.clone()).or_insert_with(|| Clip { name, chr: None, vis: None, srt: None }).srt = Some(t);
     }
     Ok(map.into_values().map(Arc::new).collect())
 }
@@ -67,7 +73,13 @@ impl Plugin for AnimPlugin {
     }
 }
 
-fn animate_bones(time: Res<Time>, mut models: Query<(&mut ModelInstance, &mut BoneAnimator)>, mut bones: Query<&mut Transform>) {
+fn animate_bones(
+    time: Res<Time>,
+    mut models: Query<(&mut ModelInstance, &mut BoneAnimator)>,
+    mut bones: Query<&mut Transform>,
+    mesh_mats: Query<&MeshMaterial3d<crate::gx_material::GxMaterial>>,
+    mut materials: ResMut<Assets<crate::gx_material::GxMaterial>>,
+) {
     for (mut inst, mut anim) in &mut models {
         let Some(current) = anim.queue.get(anim.index).cloned() else { continue };
         anim.frame += time.delta_secs() * ANIM_FPS;
@@ -94,6 +106,25 @@ fn animate_bones(time: Res<Time>, mut models: Query<(&mut ModelInstance, &mut Bo
                 let t = bone_transform(eval(&track.scale, bind[0]), eval(&track.rotation, bind[1]), eval(&track.translation, bind[2]));
                 if let Ok(mut tr) = bones.get_mut(inst.bones[i]) {
                     *tr = t;
+                }
+            }
+        }
+        if let Some(srt) = &clip.srt {
+            // One texture matrix per material here: layer 0 drives it.
+            for track in srt.tracks.iter().filter(|t| t.layer == 0) {
+                let v = track.srt(f);
+                for (k, &(_, mesh)) in inst.meshes.iter().enumerate() {
+                    if inst.mesh_materials.get(k) != Some(&track.material) {
+                        continue;
+                    }
+                    let Ok(h) = mesh_mats.get(mesh) else { continue };
+                    if let Some(mut m) = materials.get_mut(&h.0) {
+                        let mut probe = m.params;
+                        probe.set_tex_srt(v);
+                        if probe.tex_mtx != m.params.tex_mtx {
+                            m.params.set_tex_srt(v);
+                        }
+                    }
                 }
             }
         }

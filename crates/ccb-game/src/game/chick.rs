@@ -51,6 +51,13 @@ pub struct Chick {
     pub abducted: bool,
     /// Held in a UFO beam: no physics, the attack moves it.
     pub held: bool,
+    /// Took damage this frame (for the hit effect).
+    pub hurt: bool,
+    /// Something is about to hit it.
+    pub scared: bool,
+    /// Current face clip and seconds to the next blink.
+    pub face: &'static str,
+    pub blink: f32,
 }
 
 impl Chick {
@@ -63,7 +70,8 @@ impl Chick {
             return;
         }
         self.health -= amount;
-        self.flash = 0.4;
+        self.flash = 0.6;
+        self.hurt = true;
         self.vel += push;
         self.on_ground = false;
         if self.health <= 0.0 {
@@ -153,6 +161,10 @@ pub fn spawn_chick(
             radius,
             abducted: false,
             held: false,
+            hurt: false,
+            scared: false,
+            face: "",
+            blink: 1.0,
             pos: Vec2::new(x, y),
             vel: Vec2::ZERO,
             on_ground: false,
@@ -199,7 +211,8 @@ pub fn move_chicks(
             c.pos.y += dt * if c.abducted { 4.0 } else { tuning.chick_dying_speed };
             t.translation = Vec3::new(c.pos.x, c.pos.y, tuning.plane_z);
             let fade = (d * total / tuning.chick_dying_fade.max(0.1)).min(1.0);
-            let shrink = if c.abducted { (d * 2.5).min(1.0) } else { fade };
+            // Its soul takes over (see `fx`): the body pops away quickly.
+            let shrink = if c.abducted { (d * 2.5).min(1.0) } else { ((d - 0.9) / 0.1).clamp(0.0, 1.0) * fade };
             t.scale = Vec3::splat(c.scale * shrink.max(0.01));
             if d <= 0.0 {
                 commands.entity(e).despawn();

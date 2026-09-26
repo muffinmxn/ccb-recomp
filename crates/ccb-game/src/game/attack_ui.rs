@@ -20,6 +20,9 @@ use crate::{
 /// The three basic attacks in slot order (left, middle, right).
 pub const SLOTS: [AttackKind; 3] = [AttackKind::Bomb, AttackKind::Weight, AttackKind::Plant];
 
+/// Width of the traced line, in layout units.
+const TRACE_WIDTH: f32 = 5.0;
+
 /// Where the blueprint panel's buttons sit relative to the panel (yellow; mirrored for black).
 pub const CANCEL_POS: Vec2 = Vec2::new(85.0, -53.0);
 pub const CONFIRM_POS: Vec2 = Vec2::new(-91.0, 21.0);
@@ -51,6 +54,8 @@ pub struct Blueprint {
     pub team: Team,
     /// Panel openness, 0..1.
     open: f32,
+    /// The traced line through the dots hit so far: (entity, points drawn).
+    line: Option<(Entity, usize)>,
 }
 
 fn attack_id(kind: AttackKind) -> u8 {
@@ -72,7 +77,7 @@ pub fn spawn(
     for team in [Team::Yellow, Team::Black] {
         let bp = layout::spawn_layout(commands, lyt, "blueprints", &texts, meshes, materials, images)?;
         let at = tuning.gesture_panel[team.index()];
-        commands.entity(bp).insert((Blueprint { team, open: 0.0 }, Transform::from_xyz(at.x, at.y, 300.0), DespawnOnExit(Screen::Level)));
+        commands.entity(bp).insert((Blueprint { team, open: 0.0, line: None }, Transform::from_xyz(at.x, at.y, 300.0), DespawnOnExit(Screen::Level)));
     }
     Ok(())
 }
@@ -194,16 +199,21 @@ pub fn update_attack_ifc(
 /// Opens/closes each team's drawing panel and shows the dots, quality and fire button.
 #[allow(clippy::too_many_arguments)]
 pub fn update_blueprints(
+    mut commands: Commands,
     time: Res<Time<Real>>,
     view: Res<IfcView>,
+    pointer: Res<Pointer>,
+    tuning: Res<Tuning>,
     gestures: Res<super::gesture::Gestures>,
-    mut roots: Query<(&LayoutRoot, &mut Blueprint)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GxMaterial>>,
+    mut roots: Query<(Entity, &LayoutRoot, &mut Blueprint)>,
     mut panes: Query<&mut LayoutPane>,
     mut texts: Query<&mut TextPane>,
 ) {
     let dt = time.delta_secs();
     let clock = time.elapsed_secs();
-    for (root, mut bp) in &mut roots {
+    for (root_e, root, mut bp) in &mut roots {
         let t = bp.team.index();
         let mirror = if bp.team == Team::Yellow { 1.0 } else { -1.0 };
         let mode = view.mode[t];
@@ -222,6 +232,38 @@ pub fn update_blueprints(
             _ => (&[], 0),
         };
         show(root, &mut panes, "dots", tracing && o > 0.6);
+        // Connect the dots traced so far, plus a rubber band to the pointer.
+        let mut pts: Vec<Vec2> = dots.iter().take(done).copied().collect();
+        if view.player == Some(bp.team) && done > 0 && pointer.pressed {
+            if let Some(p) = pointer.pos {
+                pts.push(p - tuning.gesture_panel[t]);
+            }
+        }
+        let key = pts.len() * 1000 + pts.last().map_or(0, |p| (p.x.abs() + p.y.abs()) as usize);
+        if pts.len() >= 2 && tracing {
+            let e = match bp.line {
+                Some((e, k)) if k == key => Some(e),
+                Some((e, _)) => {
+                    commands.entity(e).insert(Mesh3d(meshes.add(super::barrier::stroke(&pts, TRACE_WIDTH))));
+                    Some(e)
+                }
+                None => {
+                    let e = commands
+                        .spawn((
+                            Mesh3d(meshes.add(super::barrier::stroke(&pts, TRACE_WIDTH))),
+                            MeshMaterial3d(materials.add(super::barrier::solid_material(Vec4::new(0.12, 0.12, 0.12, 1.0)))),
+                            Transform::from_xyz(0.0, 0.0, 12.0),
+                            bevy::camera::visibility::RenderLayers::layer(crate::layout::UI_LAYER),
+                        ))
+                        .id();
+                    commands.entity(root_e).add_child(e);
+                    Some(e)
+                }
+            };
+            bp.line = e.map(|e| (e, key));
+        } else if let Some((e, _)) = bp.line.take() {
+            commands.entity(e).despawn();
+        }
         show(root, &mut panes, "dot", false);
         for i in 0..20 {
             with_pane(root, &mut panes, &format!("dot_{i:02}"), |p| {

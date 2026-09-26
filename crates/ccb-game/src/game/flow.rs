@@ -255,6 +255,14 @@ impl GameAssets {
         e
     }
 
+    pub fn clip(&self, name: &str) -> Option<Arc<Clip>> {
+        self.clips.iter().find(|c| c.name == name).cloned()
+    }
+
+    pub fn texture(&self, name: &str) -> Option<Handle<Image>> {
+        self.textures.get(name).map(|t| t.0.clone())
+    }
+
     /// Plays a bone animation clip on a spawned model.
     pub fn play(&self, commands: &mut Commands, model: Entity, clip: &str) {
         if let Some(c) = self.clips.iter().find(|c| c.name == clip) {

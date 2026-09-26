@@ -17,6 +17,7 @@ pub mod chick;
 pub mod cursor;
 pub mod env;
 pub mod flow;
+pub mod fx;
 pub mod gesture;
 pub mod rng;
 pub mod tuning;
@@ -134,6 +135,8 @@ impl Plugin for GamePlugin {
                     cursor::plant_hint,
                     barrier::update_barriers,
                     chick::move_chicks,
+                    fx::chick_fx,
+                    fx::update_souls,
                     attack::update_attacks,
                     flow::update_hud,
                 )
