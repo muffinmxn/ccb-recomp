@@ -137,11 +137,31 @@ impl GameAssets {
         materials: &mut Assets<GxMaterial>,
         images: &mut Assets<Image>,
     ) -> Entity {
+        self.spawn_bones(commands, name, team, width, None, meshes, materials, images)
+    }
+
+    /// Like [`Self::spawn`], keeping only the meshes on the given bones.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_bones(
+        &self,
+        commands: &mut Commands,
+        name: &str,
+        team: Team,
+        width: f32,
+        bones: Option<&[&str]>,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<GxMaterial>,
+        images: &mut Assets<Image>,
+    ) -> Entity {
         let Some(model) = self.models.get(name) else {
             return commands.spawn((Transform::default(), Visibility::default())).id();
         };
         let tex = self.textures.clone();
-        let tweak = move |_: &wii_formats::mdl0::Mesh, _: &str, mat: &mut GxMaterial| {
+        let keep: Option<Vec<usize>> = bones.map(|list| model.bones.iter().enumerate().filter(|(_, b)| list.contains(&b.name.as_str())).map(|(i, _)| i).collect());
+        let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut GxMaterial| {
+            if keep.as_ref().is_some_and(|k| !k.contains(&m.bone)) {
+                return false;
+            }
             if team == Team::Black {
                 if let Some(h) = mat.tex0.clone() {
                     if let Some((n, _)) = tex.iter().find(|(_, (th, _))| *th == h) {
@@ -156,6 +176,21 @@ impl GameAssets {
         let e = g3d::spawn_model_skinned(commands, self.root, model, &self.textures, meshes, materials, images, &tweak, self.skins.get(name).cloned());
         commands.entity(e).insert(Transform::from_xyz(0.0, -100.0, 0.0).with_scale(Vec3::splat(self.scale(name, width))));
         e
+    }
+
+    /// Model-space center of the meshes on a bone.
+    pub fn bone_center(&self, name: &str, bone: &str) -> Vec2 {
+        let Some(model) = self.models.get(name) else { return Vec2::ZERO };
+        let pts: Vec<Vec2> = model
+            .meshes
+            .iter()
+            .filter(|m| model.bones.get(m.bone).is_some_and(|b| b.name == bone))
+            .flat_map(|m| m.positions.iter().map(|p| Vec2::new(p[0], p[1])))
+            .collect();
+        if pts.is_empty() {
+            return Vec2::ZERO;
+        }
+        pts.iter().copied().sum::<Vec2>() / pts.len() as f32
     }
 
     /// Spawns a model and applies a one-frame pose clip.
@@ -217,6 +252,36 @@ impl GameAssets {
                 DespawnOnExit(Screen::Level),
             ))
             .id()
+    }
+
+    /// A soft dark ellipse lying on the ground (a falling weight's shadow); scale x for width.
+    pub fn spawn_shadow(&self, commands: &mut Commands, z: f32, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> Entity {
+        let mut mat = super::barrier::solid_material(Vec4::new(0.0, 0.0, 0.0, 0.35));
+        mat.params.konst[3].w = 0.35;
+        commands
+            .spawn((
+                Mesh3d(meshes.add(Ellipse::new(0.5, 0.5))),
+                MeshMaterial3d(materials.add(mat)),
+                Transform::from_xyz(0.0, 0.03, z),
+                DespawnOnExit(Screen::Level),
+            ))
+            .insert(Transform::from_xyz(0.0, 0.03, z).with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)))
+            .id()
+    }
+
+    /// A plant's vine: a green ribbon whose mesh is rebuilt as it grows.
+    pub fn spawn_stem(&self, commands: &mut Commands, z: f32, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> (Entity, Handle<Mesh>) {
+        let mesh = meshes.add(super::barrier::ribbon(&[Vec2::ZERO, Vec2::Y * 0.01], 0.1));
+        let e = commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(materials.add(super::barrier::solid_material(Vec4::new(0.35, 0.62, 0.12, 1.0)))),
+                Transform::from_xyz(0.0, 0.0, z),
+                bevy::camera::visibility::NoFrustumCulling,
+                DespawnOnExit(Screen::Level),
+            ))
+            .id();
+        (e, mesh)
     }
 
     /// A lightning bolt: a bright quad from `bottom` to `top` at `x`.

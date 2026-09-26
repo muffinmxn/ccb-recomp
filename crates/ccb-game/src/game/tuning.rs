@@ -66,9 +66,37 @@ pub struct Tuning {
     pub bomb_exp_radius: (f32, f32),
     pub bomb_exp_full_radius: f32,
     pub bomb_roll_time: f32,
+    pub bomb_tick_time: f32,
+    pub bomb_roll_y: f32,
+    pub bomb_exp_time: f32,
+    /// `bombMin/MaxMoveByDistance`: how far a blast shoves chicks.
+    pub bomb_move_by: (f32, f32),
+    pub bomb_lightning_quality: f32,
+    /// `bombCloudRainDistance`: rain from a cloud this close douses the bomb.
+    pub bomb_rain_distance: f32,
+    pub bomb_min_size: f32,
     // weight
     pub weight_damage: DamageSettings,
     pub weight_quality_thresholds: Vec<f32>,
+    /// Width of each weight type (TV, sofa, piano, metal, elephant, whale).
+    pub weight_widths: Vec<f32>,
+    pub weight_quality_decrease: f32,
+    pub weight_border_offset: f32,
+    // plant
+    pub plant_sprout_time: f32,
+    pub plant_rot_time: f32,
+    pub plant_starving: (f32, f32),
+    pub plant_bite_time: f32,
+    pub plant_bite_cooldown: f32,
+    pub plant_start_bite_cooldown: f32,
+    pub plant_bite_range: f32,
+    pub plant_damage: DamageSettings,
+    pub plant_grow_speed: f32,
+    pub plant_grow_y_threshold: f32,
+    pub plant_threshold_living: f32,
+    pub plant_grow_max_len: f32,
+    pub plant_head_dir_interp: f32,
+    pub plant_charred_time: f32,
     // environment
     pub cloud_y: f32,
     // gesture
@@ -244,8 +272,60 @@ impl Tuning {
             bomb_exp_radius: (bomb.f32("bombExpMinRadius")?, bomb.f32("bombExpMaxRadius")?),
             bomb_exp_full_radius: bomb.f32("bombExpFullDamageRadius")?,
             bomb_roll_time: bomb.f32("bombRollTimer")?,
+            bomb_tick_time: bomb.f32("bombTickTimer")?,
+            bomb_roll_y: bomb.f32("bombRollYThreshold")?,
+            bomb_exp_time: bomb.f32("bombExpTimer")?,
+            bomb_move_by: (bomb.f32("bombMinMoveByDistance")?, bomb.f32("bombMaxMoveByDistance")?),
+            bomb_lightning_quality: bomb.f32("bombLightningHitQuality")?,
+            bomb_rain_distance: bomb.f32("bombCloudRainDistance")?,
+            bomb_min_size: bomb.f32("bombMinSize")?,
             weight_damage: DamageSettings::from(&at.floats("weightDamageSettings")?),
             weight_quality_thresholds: weight_thresholds,
+            // "6  5.2 3.8 5.0 / 5.2 4.3 4.5 / ..." -> count, then three values per type; the
+            // middle one grows with the type (TV ... whale).
+            weight_widths: at
+                .lines
+                .iter()
+                .skip_while(|l| !l.label.as_deref().is_some_and(|x| x.starts_with("weight dimensions")))
+                .take(6)
+                .map(|l| {
+                    let v: Vec<f32> = l.values.iter().map(|v| num(v)).collect();
+                    v[v.len().saturating_sub(2)]
+                })
+                .collect(),
+            weight_quality_decrease: at.f32("weightQualityDecreaseFac")?,
+            weight_border_offset: at.f32("weightFlyTargetXBorderOffset")?,
+            plant_sprout_time: at.f32("plantSproutTimer")?,
+            plant_rot_time: at.f32("plantRottingTimer")?,
+            plant_starving: {
+                let v = at.floats("plantStarvingTimerMin")?;
+                (v[0], *v.get(1).unwrap_or(&v[0]))
+            },
+            plant_bite_time: at.f32("plantBiteExecuteTimer")?,
+            plant_bite_cooldown: at.f32("plantBiteCooldownTimer")?,
+            plant_start_bite_cooldown: at.f32("plantStartingBiteCooldownTimer")?,
+            plant_bite_range: at.f32("plantBiteRange")?,
+            plant_damage: DamageSettings::from(
+                &at.lines
+                    .iter()
+                    .skip_while(|l| !l.label.as_deref().is_some_and(|x| x.starts_with("plantDamageSettings")))
+                    .nth(1)
+                    .map(|l| l.values.iter().map(|v| num(v)).collect::<Vec<f32>>())
+                    .unwrap_or_else(|| vec![10.0, 16.0, 0.5, 10.0, 20.0]),
+            ),
+            // "3 /* plantGrowSpeedMin */" is a count; the per-variant speeds follow.
+            plant_grow_speed: at
+                .lines
+                .iter()
+                .skip_while(|l| !l.label.as_deref().is_some_and(|x| x.starts_with("plantGrowSpeedMin")))
+                .nth(1)
+                .and_then(|l| l.values.first().map(|v| num(v)))
+                .unwrap_or(1.3),
+            plant_grow_y_threshold: at.f32("plantGrowYThreshold")?,
+            plant_threshold_living: at.f32("plantTreshholdReachedLivingTimer")?,
+            plant_grow_max_len: at.f32("plantGrowMaxLen")?,
+            plant_head_dir_interp: at.f32("plantHeadDirInterpolationFac")?,
+            plant_charred_time: at.f32("plantCharredTimer")?,
             cloud_y: env.f32("cloudY")?,
             gesture_timing,
             gesture_dot_radius: ges.f32("overrideCpSize").unwrap_or(15.0),

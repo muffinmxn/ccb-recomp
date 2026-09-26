@@ -13,16 +13,15 @@ use super::{
 };
 use crate::gx_material::GxMaterial;
 
-const BOMB_GRAVITY: f32 = 9.0;
-const BOMB_FLIGHT_TIME: f32 = 2.4;
-const BOMB_RADIUS: f32 = 0.95;
+/// Bomb flight: the original's bomb lanes start at ~15 up and lose `bombDampFac` per 180 Hz step.
+const BOMB_START_VY: f32 = 15.0;
+const BOMB_DAMP: f32 = 0.02;
 const WEIGHT_GRAVITY: f32 = 30.0;
-const WEIGHT_HALF_WIDTH: f32 = 1.8;
 const WEIGHT_START_Y: f32 = 16.0;
 const STRIKE_RADIUS: f32 = 1.3;
-const PLANT_HEIGHT: f32 = 3.2;
-const PLANT_GROW_TIME: f32 = 1.0;
-const PLANT_BITE_RADIUS: f32 = 1.7;
+/// Plant model size and stem thickness.
+const PLANT_SIZE: f32 = 1.5;
+const STEM_WIDTH: f32 = 0.22;
 const UFO_Y: f32 = 6.2;
 const UFO_BEAM_TIME: f32 = 1.4;
 const TENTACLE_Y: f32 = 1.1;
@@ -64,11 +63,53 @@ pub struct Attack {
     hit: Vec<Entity>,
     /// Barriers eaten by a ghost.
     pub eaten: u32,
+    /// Weight width; bomb radius.
+    size: f32,
+    /// Plant: stem points (root first), the barrier it's climbing (entity, segment, direction),
+    /// seconds since the last bite, bite cooldown, pending bite, seconds above the Y limit.
+    path: Vec<Vec2>,
+    climbing: Option<(Entity, usize, i32)>,
+    starving: f32,
+    starve_limit: f32,
+    cooldown: f32,
+    bite: Option<f32>,
+    high: f32,
+    /// A second entity: the weight's shadow, the plant's stem.
+    aux: Option<Entity>,
+    aux_mesh: Option<Handle<Mesh>>,
+    /// Blown up early (lightning, touched while drawing): quality to explode with.
+    pub detonate: Option<f32>,
 }
 
 impl Attack {
     pub fn new(kind: AttackKind, from: Team, quality: f32, target_x: f32) -> Self {
-        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None, variant: 1, hit: Vec::new(), eaten: 0 }
+        Self {
+            kind,
+            from,
+            quality,
+            state: AttackState::Prepare,
+            t: 0.0,
+            pos: Vec2::ZERO,
+            vel: Vec2::ZERO,
+            target_x,
+            visual: None,
+            effect: None,
+            flash: None,
+            variant: 1,
+            hit: Vec::new(),
+            eaten: 0,
+            size: 1.0,
+            path: Vec::new(),
+            climbing: None,
+            starving: 0.0,
+            starve_limit: 5.0,
+            cooldown: 0.0,
+            bite: None,
+            high: 0.0,
+            aux: None,
+            aux_mesh: None,
+            detonate: None,
+        }
     }
 
     pub fn target(&self) -> Team {
@@ -126,6 +167,173 @@ fn damage_chicks(chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx:
     hits
 }
 
+/// Horizontal throw speed that lands a bomb (damped arc, `BOMB_START_VY` up) at `target_x`.
+fn bomb_throw_vx(start: Vec2, target_x: f32, r: f32, g: f32) -> f32 {
+    let land = |vx: f32| {
+        let h = 1.0 / 180.0;
+        let (mut p, mut v) = (start, Vec2::new(vx, BOMB_START_VY));
+        for _ in 0..2000 {
+            v.y += g * h;
+            v *= 1.0 - BOMB_DAMP;
+            p += v * h;
+            if p.y <= r && v.y < 0.0 {
+                break;
+            }
+        }
+        p.x
+    };
+    let dir = (target_x - start.x).signum();
+    let (mut lo, mut hi) = (0.0f32, 400.0f32);
+    for _ in 0..30 {
+        let mid = (lo + hi) / 2.0;
+        if (land(mid * dir) - start.x).abs() < (target_x - start.x).abs() {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo * dir
+}
+
+/// Whether a line of either team lies between `a` and `b` (blasts don't pass lines).
+fn line_between(barriers: &Query<(Entity, &mut Barrier)>, a: Vec2, b: Vec2) -> bool {
+    [Team::Yellow, Team::Black].iter().any(|&t| super::barrier::segment_hit(barriers, t, a, b).is_some())
+}
+
+/// A bomb blast: full damage within `full_radius`, less further out, none behind a line.
+#[allow(clippy::too_many_arguments)]
+fn blast(chicks: &mut Query<(Entity, &mut Chick)>, barriers: &Query<(Entity, &mut Barrier)>, sfx: &mut crate::sfx::Sfx, center: Vec2, radius: f32, full_radius: f32, damage: f32, push: f32) {
+    let mut hits = 0;
+    for (_, mut c) in chicks.iter_mut() {
+        if !c.alive() {
+            continue;
+        }
+        let d = c.pos.distance(center);
+        if d > radius + c.radius || line_between(barriers, center, c.pos) {
+            continue;
+        }
+        let falloff = if d <= full_radius { 1.0 } else { 1.0 - (d - full_radius) / (radius - full_radius).max(1e-3) };
+        let dir = (c.pos - center).normalize_or(Vec2::Y);
+        c.damage(damage * falloff.clamp(0.05, 1.0), (dir + Vec2::Y * 0.5) * push * falloff.max(0.3));
+        if c.dying.is_some() {
+            sfx.play("SFX_CHICKS_DIE");
+        } else {
+            sfx.play_one_of(&OUCH, hits + (c.pos.x * 7.0).abs() as usize);
+        }
+        hits += 1;
+    }
+}
+
+/// One frame of a growing plant: it bites chicks in range, otherwise grows its head towards
+/// the nearest chick (never downwards) and climbs lines it meets towards their higher end.
+/// Returns true when it dies (starved, too long above `plantGrowYThreshold`).
+fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Barrier)>, chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx::Sfx, dt: f32) -> bool {
+    let target = a.target();
+    a.starving += dt;
+    a.cooldown -= dt;
+    let head = a.pos;
+    // Biting: a short windup, then the snap.
+    if let Some(b) = a.bite {
+        let b = b + dt;
+        if b >= tuning.plant_bite_time && b - dt < tuning.plant_bite_time {
+            let dmg = tuning.plant_damage.damage(a.quality);
+            let victim = chicks
+                .iter_mut()
+                .filter(|(_, c)| c.team == target && c.alive())
+                .min_by(|x, y| x.1.pos.distance(head).total_cmp(&y.1.pos.distance(head)));
+            if let Some((_, mut c)) = victim {
+                if c.pos.distance(head) <= tuning.plant_bite_range + c.radius {
+                    let push = (c.pos - head).normalize_or(Vec2::Y) * 1.5 + Vec2::Y;
+                    c.damage(dmg, push);
+                    sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { "SFX_CHICKS_AUA02" });
+                    a.starving = 0.0;
+                }
+            }
+            sfx.play_one_of(&["SFX_ATTACKS_PLANT_BITE_1", "SFX_ATTACKS_PLANT_BITE_2", "SFX_ATTACKS_PLANT_BITE_3"], a.path.len());
+        }
+        if b >= tuning.plant_bite_time * 2.0 {
+            a.cooldown = tuning.plant_bite_cooldown;
+            a.bite = None;
+        } else {
+            a.bite = Some(b);
+        }
+        return false;
+    }
+    let prey = chicks
+        .iter()
+        .filter(|(_, c)| c.team == target && c.alive())
+        .map(|(_, c)| c.pos)
+        .min_by(|x, y| x.distance(head).total_cmp(&y.distance(head)));
+    if let Some(p) = prey {
+        if p.distance(head) <= tuning.plant_bite_range && a.cooldown <= 0.0 {
+            a.bite = Some(0.0);
+            return false;
+        }
+    }
+    let len: f32 = a.path.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let sprouting = a.t < tuning.plant_sprout_time;
+    let speed = tuning.plant_grow_speed * if sprouting { 2.0 } else { 1.0 };
+    if len < tuning.plant_grow_max_len {
+        let step = speed * dt;
+        if let Some((be, seg, dir)) = a.climbing {
+            // Climbing a line: follow it towards its higher end, only upwards.
+            match barriers.get(be).ok().map(|(_, b)| b.points.clone()) {
+                Some(pts) if seg + 1 < pts.len() => {
+                    let (from, to) = if dir > 0 { (pts[seg], pts[seg + 1]) } else { (pts[seg + 1], pts[seg]) };
+                    let d = (to - from).normalize_or(Vec2::Y);
+                    a.vel = d;
+                    if a.pos.distance(to) <= step {
+                        a.pos = to;
+                        let nseg = seg as i32 + dir;
+                        a.climbing = None;
+                        if nseg >= 0 && (nseg as usize) + 1 < pts.len() {
+                            let s2 = nseg as usize;
+                            let (f2, t2) = if dir > 0 { (pts[s2], pts[s2 + 1]) } else { (pts[s2 + 1], pts[s2]) };
+                            // Only upwards: let go once the line turns down.
+                            if t2.y >= f2.y - 0.05 {
+                                a.climbing = Some((be, s2, dir));
+                            }
+                        }
+                    } else {
+                        a.pos += d * step;
+                    }
+                }
+                _ => a.climbing = None,
+            }
+        } else {
+            // Head for the nearest chick, but never downwards.
+            let want = prey.map_or(Vec2::Y, |p| (p - head).normalize_or(Vec2::Y));
+            let want = if sprouting { Vec2::Y } else { Vec2::new(want.x, want.y.max(0.0)).normalize_or(Vec2::X * want.x.signum()) };
+            let k = 1.0 - (1.0 - tuning.plant_head_dir_interp).powf(dt * 60.0);
+            a.vel = a.vel.lerp(want, k).normalize_or(Vec2::Y);
+            let next = a.pos + a.vel * step;
+            if let Some((p, seg, be)) = super::barrier::segment_hit(barriers, target, a.pos, next + a.vel * 0.1) {
+                // Met a line: climb it towards its higher end.
+                if let Ok((_, b)) = barriers.get(be) {
+                    let dir = if b.points[seg + 1].y >= b.points[seg].y { 1 } else { -1 };
+                    a.pos = p;
+                    a.climbing = Some((be, seg, dir));
+                }
+            } else {
+                a.pos = next;
+                if !sprouting {
+                    a.pos.y = a.pos.y.max(0.35);
+                }
+            }
+        }
+        // Stay on the target side.
+        let (lo, hi) = tuning.side_range(target);
+        a.pos.x = a.pos.x.clamp(lo - 0.5, hi + 0.5);
+        if a.path.last().is_none_or(|l| l.distance(a.pos) > 0.08) {
+            a.path.push(a.pos);
+        }
+    }
+    if a.pos.y > tuning.plant_grow_y_threshold {
+        a.high += dt;
+    }
+    a.starving > a.starve_limit || a.high > tuning.plant_threshold_living
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn update_attacks(
     mut commands: Commands,
@@ -151,69 +359,102 @@ pub fn update_attacks(
             // ---------------------------------------------------------------- bomb
             (AttackKind::Bomb, AttackState::Prepare) => {
                 if a.t >= tuning.attack_prepare_time {
-                    // Thrown in from off-screen on the attacker's side.
-                    let start = Vec2::new(tuning.bomb_appear.x * -a.from.side() * -1.0, tuning.bomb_appear.y);
-                    let start = Vec2::new(start.x.abs() * a.from.side(), start.y);
-                    let tx = a.target_x;
-                    let t = BOMB_FLIGHT_TIME;
+                    // Thrown in from off-screen on the attacker's side (`bombAppearPos`), on a
+                    // damped arc like the original's bomb lanes.
+                    let start = Vec2::new(tuning.bomb_appear.x.abs() * a.from.side(), tuning.bomb_appear.y);
+                    a.size = tuning.bomb_min_size;
                     a.pos = start;
-                    a.vel = Vec2::new((tx - start.x) / t, (BOMB_RADIUS - start.y + 0.5 * BOMB_GRAVITY * t * t) / t);
+                    a.vel = Vec2::new(bomb_throw_vx(start, a.target_x, a.size, tuning.gravity), BOMB_START_VY);
                     sfx.play("SFX_ATTACKS_BOMB_FLY");
-                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, BOMB_RADIUS * 2.0, &mut meshes, &mut materials, &mut images));
+                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, a.size * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
             }
-            (AttackKind::Bomb, AttackState::Travel) => {
-                let prev = a.pos;
-                a.vel.y -= BOMB_GRAVITY * dt;
-                let next = prev + a.vel * dt;
-                if let Some((p, n, be)) = sweep_hit(&barriers, target, prev, next, BOMB_RADIUS) {
-                    // Deflected: reflect off the barrier and lose energy.
-                    let v = a.vel;
-                    a.vel = (v - 2.0 * v.dot(n) * n) * 0.6;
-                    a.pos = p + n * (BOMB_RADIUS + 0.12);
-                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
-                    if let Ok((_, mut b)) = barriers.get_mut(be) {
-                        b.flash = 0.4;
+            (AttackKind::Bomb, AttackState::Travel | AttackState::Roll) => {
+                let r = a.size;
+                let rolling = a.state == AttackState::Roll;
+                // 180 Hz steps: gravity, damping, bounces off lines and the floor.
+                let h = 1.0 / tuning.physics_fps;
+                let steps = ((dt / h).round() as usize).clamp(1, 20);
+                let damp = if rolling { 1.0 - 3.0 * h } else { 1.0 - BOMB_DAMP };
+                for _ in 0..steps {
+                    a.vel.y += tuning.gravity * h;
+                    a.vel *= damp;
+                    let prev = a.pos;
+                    let next = prev + a.vel * h;
+                    if let Some((p, n, be)) = sweep_hit(&barriers, target, prev, next, r) {
+                        let v = a.vel;
+                        let vn = v.dot(n);
+                        if vn < 0.0 {
+                            // `particleCollisionVelReduction`
+                            a.vel = (v - vn * n) * 0.9 - vn * n * 0.35;
+                            if let Ok((_, mut b)) = barriers.get_mut(be) {
+                                if b.flash <= 0.0 {
+                                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
+                                }
+                                b.flash = 0.4;
+                                // Touching the bomb while drawing sets it off.
+                                if b.drawing && rolling {
+                                    a.detonate = Some(a.quality);
+                                }
+                            }
+                        }
+                        a.pos = p + n * (r + 0.02);
+                    } else {
+                        a.pos = next;
                     }
-                } else {
-                    a.pos = next;
+                    if a.pos.y <= r {
+                        a.pos.y = r;
+                        if a.vel.y < 0.0 {
+                            a.vel.y = -a.vel.y * 0.3;
+                            if a.vel.y < 1.0 {
+                                a.vel.y = 0.0;
+                            }
+                        }
+                    }
+                    // The target side's walls keep a landed bomb in.
+                    if rolling {
+                        let (lo, hi) = tuning.side_range(target);
+                        let (lo, hi) = (lo - tuning.chick_radius, hi + tuning.chick_radius);
+                        if a.pos.x < lo + r || a.pos.x > hi - r {
+                            a.pos.x = a.pos.x.clamp(lo + r, hi - r);
+                            a.vel.x = -a.vel.x * 0.5;
+                        }
+                    }
                 }
-                if a.pos.y <= BOMB_RADIUS {
-                    a.pos.y = BOMB_RADIUS;
-                    a.vel = Vec2::new(a.vel.x * 0.4, 0.0);
+                if !rolling && a.pos.y <= tuning.bomb_roll_y + r && a.pos.x * target.side() > 0.0 {
+                    // `bombRollYThreshold`: down on the field, the fuse is burning.
                     if let Some(v) = a.visual {
                         assets.play(&mut commands, v, "bomb__roll");
                     }
-                    sfx.play("SFX_ATTACKS_BOMB_COUNTDOWN");
                     a.state = AttackState::Roll;
                     a.t = 0.0;
+                    sfx.play("SFX_ATTACKS_BOMB_COUNTDOWN");
                 }
-                if a.pos.x.abs() > 15.0 || a.pos.y < -3.0 {
+                if a.pos.x.abs() > 17.0 || a.pos.y < -3.0 || (!rolling && a.t > 4.0) {
                     sfx.play("SFX_ATTACKS_BOMB_DEFUSED");
                     a.state = AttackState::Finished;
                 }
-                let spin = a.t * -a.from.side() * 4.0;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale("bomb", BOMB_RADIUS * 2.0))));
-            }
-            (AttackKind::Bomb, AttackState::Roll) => {
-                let vx = a.vel.x;
-                a.pos.x += vx * dt;
-                a.vel.x *= 1.0 - 2.0 * dt;
-                let side = tuning.side_width + 1.0;
-                a.pos.x = a.pos.x.clamp(-side, side);
-                let pulse = 1.0 + 0.12 * (a.t * 18.0).sin();
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("bomb", BOMB_RADIUS * 2.0) * pulse)));
-                if a.t >= tuning.bomb_roll_time {
+                // Ticks every `bombTickTimer`.
+                if rolling && (a.t / tuning.bomb_tick_time).floor() != ((a.t - dt) / tuning.bomb_tick_time).floor() {
+                    sfx.play("SFX_ATTACKS_BOMB_COUNTDOWN");
+                }
+                let spin = -a.pos.x / r;
+                let pulse = if rolling { 1.0 + 0.12 * (a.t * 18.0).sin() } else { 1.0 };
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale("bomb", r * 2.0) * pulse)));
+                if a.state != AttackState::Finished && ((rolling && a.t >= tuning.bomb_roll_time) || a.detonate.is_some()) {
+                    let q = a.detonate.take().unwrap_or(a.quality).max(a.quality);
                     let (rmin, rmax) = tuning.bomb_exp_radius;
-                    let radius = rmin + (rmax - rmin) * a.quality;
-                    let dmg = tuning.bomb_damage.damage(a.quality);
-                    damage_chicks(&mut chicks, &mut sfx, a.pos, radius, tuning.bomb_exp_full_radius, dmg, 4.0, false);
+                    let radius = rmin + (rmax - rmin) * q;
+                    let dmg = tuning.bomb_damage.damage(q);
+                    let push = tuning.bomb_move_by.0 + (tuning.bomb_move_by.1 - tuning.bomb_move_by.0) * q;
+                    blast(&mut chicks, &barriers, &mut sfx, a.pos, radius, tuning.bomb_exp_full_radius, dmg, push * 30.0);
                     if let Some(v) = a.visual.take() {
                         commands.entity(v).despawn();
                     }
                     sfx.play("SFX_ATTACKS_BOMB_EXPL");
+                    a.quality = q;
                     a.effect = Some(assets.spawn(&mut commands, "explosion", a.from, radius * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Impact;
                     a.t = 0.0;
@@ -221,14 +462,24 @@ pub fn update_attacks(
             }
             // ---------------------------------------------------------------- weight
             (AttackKind::Weight, AttackState::Prepare) => {
-                if a.t >= tuning.attack_prepare_time * 0.6 {
-                    a.pos = Vec2::new(a.target_x, WEIGHT_START_Y);
-                    a.vel = Vec2::new(0.0, -2.0);
+                if a.aux.is_none() {
+                    // Heavier types for better traces (`weightQualityTypeThresholds`).
                     let variant = tuning.weight_quality_thresholds.iter().rposition(|&th| a.quality >= th).unwrap_or(0) + 1;
-                    let v = assets.spawn_weight(&mut commands, variant, a.from, WEIGHT_HALF_WIDTH * 2.0, &mut meshes, &mut materials, &mut images);
                     a.variant = variant;
+                    a.size = tuning.weight_widths.get(variant - 1).copied().unwrap_or(4.0);
+                    let (lo, hi) = tuning.side_range(target);
+                    let border = tuning.weight_border_offset.min((hi - lo) / 2.0);
+                    a.target_x = a.target_x.clamp(lo + border, hi - border);
+                    a.pos = Vec2::new(a.target_x, WEIGHT_START_Y);
+                    // Its shadow shows where it will land.
+                    a.aux = Some(assets.spawn_shadow(&mut commands, z, &mut meshes, &mut materials));
+                }
+                let k = (a.t / (tuning.attack_prepare_time * 0.6)).min(1.0);
+                set_transform(&mut commands, a.aux, Transform::from_xyz(a.target_x, 0.03, z).with_scale(Vec3::new(a.size * (0.3 + 0.3 * k), 1.0, 1.4)));
+                if a.t >= tuning.attack_prepare_time * 0.6 {
+                    a.vel = Vec2::new(0.0, -2.0);
+                    a.visual = Some(assets.spawn_weight(&mut commands, a.variant, a.from, a.size, &mut meshes, &mut materials, &mut images));
                     sfx.play("SFX_ATTACKS_WEIGHT_FLY");
-                    a.visual = Some(v);
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
@@ -237,39 +488,69 @@ pub fn update_attacks(
                 let prev = a.pos;
                 a.vel.y -= WEIGHT_GRAVITY * dt;
                 let next = prev + a.vel * dt;
+                let half = a.size / 2.0;
+                let low = half * 0.6;
+                let bottom = |p: Vec2| p - Vec2::Y * low;
                 // The weight's underside sweeps across barriers.
-                let bottom = |p: Vec2| p - Vec2::Y * 1.2;
-                let hit = [-WEIGHT_HALF_WIDTH * 0.8, 0.0, WEIGHT_HALF_WIDTH * 0.8]
-                    .iter()
-                    .find_map(|&dx| sweep_hit(&barriers, target, bottom(prev) + Vec2::X * dx, bottom(next) + Vec2::X * dx, 0.1));
+                let hit = (0..=6)
+                    .map(|i| -half + a.size * i as f32 / 6.0)
+                    .find_map(|dx| sweep_hit(&barriers, target, bottom(prev) + Vec2::X * dx, bottom(next) + Vec2::X * dx, 0.1));
+                a.pos = next;
                 if let Some((_, _, be)) = hit {
-                    if let Ok((_, mut b)) = barriers.get_mut(be) {
-                        b.flash = 0.4;
+                    // The line has to be at least as wide as the weight.
+                    let cover = barriers
+                        .get(be)
+                        .map(|(_, b)| {
+                            let (lo, hi) = b.bounds();
+                            ((hi.x.min(a.pos.x + half) - lo.x.max(a.pos.x - half)) / a.size).max(0.0)
+                        })
+                        .unwrap_or(0.0);
+                    if cover >= 0.95 {
+                        if let Ok((_, mut b)) = barriers.get_mut(be) {
+                            b.flash = 0.4;
+                        }
+                        a.pos = prev;
+                        a.vel = Vec2::new(rng.range((-1.0, 1.0)), 3.0);
+                        sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
+                        a.state = AttackState::Blocked;
+                        a.t = 0.0;
+                    } else {
+                        // Too narrow: smashed through, and the weight loses some punch.
+                        commands.entity(be).despawn();
+                        a.quality *= 1.0 - tuning.weight_quality_decrease * cover;
+                        sfx.play("SFX_CHICK_DESTROY_LINE");
                     }
-                    a.vel = Vec2::new(rng.range((-1.0, 1.0)), 3.0);
-                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
-                    a.state = AttackState::Blocked;
-                    a.t = 0.0;
-                } else {
-                    a.pos = next;
                 }
-                if a.pos.y <= 1.2 {
-                    a.pos.y = 1.2;
+                if a.state == AttackState::Travel && a.pos.y <= low {
+                    a.pos.y = low;
                     let dmg = tuning.weight_damage.damage(a.quality);
-                    let center = Vec2::new(a.pos.x, 0.5);
                     sfx.play(WEIGHT_SOUNDS[a.variant.clamp(1, 6) - 1]);
-                    damage_chicks(&mut chicks, &mut sfx, center, WEIGHT_HALF_WIDTH + 0.4, WEIGHT_HALF_WIDTH, dmg, 1.0, true);
+                    let mut hits = 0;
+                    for (_, mut c) in chicks.iter_mut() {
+                        if c.team == target && c.alive() && (c.pos.x - a.pos.x).abs() < half + c.radius * 0.5 {
+                            let push = Vec2::new((c.pos.x - a.pos.x).signum() * 3.0, 0.0);
+                            c.damage(dmg, push);
+                            c.squashed = tuning.chick_squashed_time;
+                            sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { OUCH[hits % OUCH.len()] });
+                            hits += 1;
+                        }
+                    }
                     a.state = AttackState::Impact;
                     a.t = 0.0;
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", WEIGHT_HALF_WIDTH * 2.0))));
+                let k = (1.0 - (a.pos.y / WEIGHT_START_Y)).clamp(0.0, 1.0);
+                set_transform(&mut commands, a.aux, Transform::from_xyz(a.pos.x, 0.03, z).with_scale(Vec3::new(a.size * (0.6 + 0.4 * k), 1.0, 1.4)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", a.size))));
             }
             (AttackKind::Weight, AttackState::Blocked) => {
                 a.vel.y -= WEIGHT_GRAVITY * 0.5 * dt;
                 let v = a.vel;
                 a.pos += v * dt;
                 let fade = (1.0 - a.t).max(0.01);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(a.t * 2.0)).with_scale(Vec3::splat(assets.scale("weight", WEIGHT_HALF_WIDTH * 2.0) * fade)));
+                if let Some(e) = a.aux.take() {
+                    commands.entity(e).despawn();
+                }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(a.t * 2.0)).with_scale(Vec3::splat(assets.scale("weight", a.size) * fade)));
                 if a.t >= 1.0 {
                     a.state = AttackState::Finished;
                 }
@@ -325,56 +606,68 @@ pub fn update_attacks(
             }
             // ---------------------------------------------------------------- plant
             (AttackKind::Plant, AttackState::Prepare) => {
-                // A mound telegraphs where the plant will come up.
                 if a.t >= tuning.attack_prepare_time {
-                    a.pos = Vec2::new(a.target_x, -PLANT_HEIGHT);
+                    // Sprouts at its anchor and grows as a vine towards the chicks.
+                    a.pos = Vec2::new(a.target_x, 0.0);
+                    a.path = vec![a.pos];
+                    a.vel = Vec2::Y;
+                    a.starve_limit = rng.range(tuning.plant_starving);
+                    a.cooldown = tuning.plant_start_bite_cooldown;
                     sfx.play("SFX_ATTACKS_PLANT_APPEAR");
-                    a.visual = Some(assets.spawn_posed(&mut commands, "plant", "plant__intro", a.from, 2.4, &mut meshes, &mut materials, &mut images));
+                    // The flytrap head rides the vine's tip; the leaves stay at the root.
+                    let head = assets.spawn_bones(&mut commands, "plant", a.from, PLANT_SIZE, Some(&["head", "plantInnerMouth"]), &mut meshes, &mut materials, &mut images);
+                    assets.play(&mut commands, head, "plant__intro");
+                    a.visual = Some(head);
+                    let leaves = assets.spawn_bones(&mut commands, "plant", a.from, PLANT_SIZE, Some(&["leaves"]), &mut meshes, &mut materials, &mut images);
+                    commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z - 0.05).with_scale(Vec3::splat(assets.scale("plant", PLANT_SIZE))));
+                    a.flash = Some(leaves);
+                    let (stem, mesh) = assets.spawn_stem(&mut commands, z - 0.2, &mut meshes, &mut materials);
+                    a.aux = Some(stem);
+                    a.aux_mesh = Some(mesh);
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
             }
             (AttackKind::Plant, AttackState::Travel) => {
-                // Grows up out of the ground; a barrier across its path stops it.
-                let k = (a.t / PLANT_GROW_TIME).min(1.0);
-                let head = -PLANT_HEIGHT + (PLANT_HEIGHT * 2.0) * k;
-                if let Some((y, be)) = vertical_block(&barriers, target, a.target_x, head + 0.4, 0.2) {
-                    if let Ok((_, mut b)) = barriers.get_mut(be) {
-                        b.flash = 0.4;
+                let was_biting = a.bite.is_some();
+                let died = grow_plant(&mut a, &tuning, &barriers, &mut chicks, &mut sfx, dt);
+                if a.bite.is_some() && !was_biting {
+                    if let Some(v) = a.visual {
+                        assets.play(&mut commands, v, "plant__bite");
                     }
-                    a.pos.y = y - 1.2 - PLANT_HEIGHT * 0.5;
+                }
+                if let Some(mut mesh) = a.aux_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
+                    *mesh = super::barrier::ribbon(&a.path, STEM_WIDTH);
+                }
+                // The head faces along the vine, its mouth towards the prey.
+                let d = a.vel;
+                let s = assets.scale("plant", PLANT_SIZE);
+                let rot = Quat::from_rotation_z(f32::atan2(-d.x, d.y) * 0.5);
+                let off = rot * (assets.bone_center("plant", "head") * s).extend(0.0);
+                let flip = if d.x < 0.0 { -1.0 } else { 1.0 };
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x - off.x * flip, a.pos.y - off.y, z - 0.1).with_rotation(rot).with_scale(Vec3::new(s * flip, s, s)));
+                if died {
                     sfx.play("SFX_ATTACKS_PLANT_ROTT");
                     a.state = AttackState::Blocked;
                     a.t = 0.0;
-                } else {
-                    a.pos.y = head - PLANT_HEIGHT * 0.5;
-                    if k >= 1.0 {
-                        // Two bites at chicks around the stem.
-                        let dmg = tuning.bomb_damage.damage(a.quality) * 0.5;
-                        for _ in 0..2 {
-                            damage_chicks(&mut chicks, &mut sfx, Vec2::new(a.target_x, 0.8), PLANT_BITE_RADIUS, PLANT_BITE_RADIUS * 0.6, dmg, 1.5, false);
-                        }
-                        if let Some(v) = a.visual {
-                            assets.play(&mut commands, v, "plant__bite");
-                        }
-                        sfx.play_one_of(&["SFX_ATTACKS_PLANT_BITE_1", "SFX_ATTACKS_PLANT_BITE_2", "SFX_ATTACKS_PLANT_BITE_3"], (a.quality * 10.0) as usize);
-                        a.state = AttackState::Impact;
-                        a.t = 0.0;
-                    }
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.target_x, a.pos.y, z - 0.3).with_scale(Vec3::splat(assets.scale("plant", 2.4))));
             }
             (AttackKind::Plant, AttackState::Blocked) => {
-                let sink = a.t * 3.0;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.target_x, a.pos.y - sink, z - 0.3).with_scale(Vec3::splat(assets.scale("plant", 2.4))));
-                if a.t >= 1.2 {
-                    a.state = AttackState::Finished;
+                // Rots (`plantRottingTimer`): the head droops and the vine withers away.
+                let k = (a.t / tuning.plant_rot_time).min(1.0);
+                let keep = ((1.0 - k) * a.path.len() as f32).ceil() as usize;
+                a.path.truncate(keep.max(2));
+                if let Some(mut mesh) = a.aux_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
+                    *mesh = super::barrier::ribbon(&a.path, STEM_WIDTH * (1.0 - k * 0.5));
                 }
-            }
-            (AttackKind::Plant, AttackState::Impact) => {
-                let sink = (a.t - 1.0).max(0.0) * 4.0;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.target_x, a.pos.y - sink, z - 0.3).with_scale(Vec3::splat(assets.scale("plant", 2.4))));
-                if a.t >= 2.0 {
+                let head = *a.path.last().unwrap_or(&a.pos);
+                let s = assets.scale("plant", PLANT_SIZE) * (1.0 - k).max(0.01);
+                let off = assets.bone_center("plant", "head") * s;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(head.x - off.x, head.y - off.y - k * 0.5, z - 0.1).with_scale(Vec3::splat(s)));
+                if let Some(l) = a.flash {
+                    commands.entity(l).insert(Transform::from_xyz(a.path[0].x, 0.0, z - 0.05).with_scale(Vec3::splat(assets.scale("plant", PLANT_SIZE) * (1.0 - k).max(0.01))));
+                }
+                if a.t >= tuning.plant_rot_time {
                     a.state = AttackState::Finished;
                 }
             }
@@ -558,14 +851,15 @@ pub fn update_attacks(
                 }
                 if a.kind == AttackKind::Weight {
                     let fade = (1.0 - (a.t - 1.0).max(0.0) * 2.0).max(0.01);
-                    set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", WEIGHT_HALF_WIDTH * 2.0) * fade)));
+                    set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", a.size) * fade)));
+                    set_transform(&mut commands, a.aux, Transform::from_xyz(a.pos.x, 0.02, z).with_scale(Vec3::new(a.size * fade, 1.0, 1.2)));
                 }
                 if a.t >= 1.5 {
                     a.state = AttackState::Finished;
                 }
             }
             (_, AttackState::Finished) => {
-                for v in [a.visual.take(), a.effect.take(), a.flash.take()].into_iter().flatten() {
+                for v in [a.visual.take(), a.effect.take(), a.flash.take(), a.aux.take()].into_iter().flatten() {
                     commands.entity(v).despawn();
                 }
                 commands.entity(e).despawn();

@@ -146,6 +146,8 @@ pub fn cpu_turn(
                     if side.think <= 0.0 {
                         let options: Vec<AttackKind> = m.available.iter().copied().filter(|k| k.implemented()).collect();
                         let kind = rng.pick(&options).unwrap_or(AttackKind::Bomb);
+                        // Debug: CCB_FORCE_ATTACK=bomb|weight|plant makes the CPU always pick it.
+                        let kind = std::env::var("CCB_FORCE_ATTACK").ok().and_then(|n| options.iter().copied().find(|k| k.gesture_group() == n)).unwrap_or(kind);
                         let dots = gestures.dots(kind) as f32;
                         // The original's skill time is per dot; add the time to move between dots.
                         let duration = dots * rng.range(ki.draw_skill_time) * 3.0;

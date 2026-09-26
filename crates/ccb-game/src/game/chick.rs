@@ -288,7 +288,9 @@ pub fn move_chicks(
         if c.yaw_timer <= 0.0 {
             c.yaw_timer = rng.range(tuning.chick_rot_timer);
             let (lo, hi) = tuning.chick_rot_angles;
-            c.yaw_target = rng.range((lo, hi)).to_radians() * c.dir;
+            // The cfg range (-20..90 degrees) is for the original's own rotation animation;
+            // turning the whole model that far hides the face, so keep a smaller turn.
+            c.yaw_target = (rng.range((lo, hi)) * 0.35).to_radians() * c.dir;
         }
         let k = 1.0 - (1.0 - tuning.chick_rot_damp).powf(dt * 60.0);
         c.yaw += (c.yaw_target - c.yaw) * k;
