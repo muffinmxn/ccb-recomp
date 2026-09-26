@@ -1,8 +1,11 @@
 //! Parsers for the Wii file formats needed to take a WiiWare WAD apart:
 //! installable WADs (ticket, TMD, encrypted contents), U8 archives and DOL executables.
 
+pub mod brres;
 pub mod dol;
+pub mod gx_texture;
 pub mod lz;
+pub mod tpl;
 pub mod u8arc;
 pub mod wad;
 
