@@ -14,6 +14,7 @@ pub mod attack;
 pub mod attack_ui;
 pub mod barrier;
 pub mod chick;
+pub mod cursor;
 pub mod flow;
 pub mod gesture;
 pub mod rng;
@@ -115,7 +116,8 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<rng::Rng>()
             .add_systems(OnEnter(Screen::Level), flow::start_match.after(crate::level::spawn_level))
-            .add_systems(OnExit(Screen::Level), flow::end_match)
+            .add_systems(OnEnter(Screen::Level), cursor::spawn_cursor)
+            .add_systems(OnExit(Screen::Level), (flow::end_match, cursor::reset_pointer))
             .add_systems(Update, flow::showcase.run_if(in_state(Screen::Level)))
             .add_systems(
                 Update,
@@ -126,6 +128,8 @@ impl Plugin for GamePlugin {
                     attack_ui::update_blueprints,
                     ai::cpu_turn,
                     barrier::player_draw_barrier,
+                    cursor::update_cursor,
+                    cursor::plant_hint,
                     barrier::update_barriers,
                     chick::move_chicks,
                     attack::update_attacks,

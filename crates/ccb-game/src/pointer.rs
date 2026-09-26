@@ -18,6 +18,8 @@ pub struct Pointer {
     pub pressed: bool,
     pub just_pressed: bool,
     pub just_released: bool,
+    /// Gameplay shows its paint cursor instead of the hand.
+    pub paint: bool,
 }
 
 #[derive(Component)]
@@ -64,9 +66,14 @@ fn read_pointer(
 ) {
     let Ok(w) = windows.single() else { return };
     let scale = layout::LAYOUT_HEIGHT / w.height().max(1.0);
-    pointer.screen = w.cursor_position();
-    pointer.pos = w
-        .cursor_position()
+    // Debug: CCB_POINTER=x,y pins the pointer at a window position (for headless shots).
+    let pinned = std::env::var("CCB_POINTER").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some(Vec2::new(x.parse().ok()?, y.parse().ok()?))
+    });
+    let cursor = pinned.or(w.cursor_position());
+    pointer.screen = cursor;
+    pointer.pos = cursor
         .map(|c| Vec2::new((c.x - w.width() / 2.0) * scale, (w.height() / 2.0 - c.y) * scale));
     pointer.pressed = buttons.pressed(MouseButton::Left);
     pointer.just_pressed = buttons.just_pressed(MouseButton::Left);
@@ -75,7 +82,7 @@ fn read_pointer(
 
 fn move_sprite(pointer: Res<Pointer>, mut sprite: Query<(&mut Transform, &mut Visibility), With<PointerSprite>>) {
     let Ok((mut t, mut v)) = sprite.single_mut() else { return };
-    match pointer.pos {
+    match pointer.pos.filter(|_| !pointer.paint) {
         Some(p) => {
             // The fingertip (the hotspot) is near the image's top-left corner.
             t.translation.x = p.x - 8.0;

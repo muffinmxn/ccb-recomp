@@ -80,6 +80,7 @@ pub struct Attack {
     high: f32,
     /// A second entity: the weight's shadow, the plant's stem.
     aux: Option<Entity>,
+    vine_key: u32,
     /// Blown up early (lightning, touched while drawing): quality to explode with.
     pub detonate: Option<f32>,
 }
@@ -110,6 +111,7 @@ impl Attack {
             bite: None,
             high: 0.0,
             aux: None,
+            vine_key: 0,
             detonate: None,
         }
     }
@@ -185,13 +187,16 @@ fn plant_scale(assets: &GameAssets) -> f32 {
 }
 
 /// Rebuilds the vine's ribbons along the plant's path.
-fn draw_vine(commands: &mut Commands, meshes: &mut Assets<Mesh>, a: &Attack, width: f32) {
-    if a.path.len() < 2 {
+fn draw_vine(commands: &mut Commands, meshes: &mut Assets<Mesh>, a: &mut Attack, width: f32) {
+    // Only rebuild when the vine changed (new meshes take a frame to reach the GPU).
+    let key = a.path.len() as u32 * 1000 + (width * 999.0) as u32;
+    if a.path.len() < 2 || a.vine_key == key {
         return;
     }
+    a.vine_key = key;
     for (e, w) in [(a.effect, STEM_OUTLINE), (a.aux, STEM_WIDTH)] {
         if let Some(e) = e {
-            commands.entity(e).insert(Mesh3d(meshes.add(super::barrier::ribbon(&a.path, w * width))));
+            commands.entity(e).insert(Mesh3d(meshes.add(super::barrier::stroke(&a.path, w * width))));
         }
     }
 }
@@ -652,15 +657,15 @@ pub fn update_attacks(
                     commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets))));
                     a.flash = Some(leaves);
                     // The vine: a dark outline under a lighter green fill.
-                    a.effect = Some(assets.spawn_stem(&mut commands, z + 0.25, Vec4::new(0.08, 0.25, 0.04, 1.0), &mut materials));
-                    a.aux = Some(assets.spawn_stem(&mut commands, z + 0.26, Vec4::new(0.42, 0.72, 0.16, 1.0), &mut materials));
+                    a.effect = Some(assets.spawn_stem(&mut commands, z + 0.70, Vec4::new(0.08, 0.25, 0.04, 1.0), &mut materials));
+                    a.aux = Some(assets.spawn_stem(&mut commands, z + 0.71, Vec4::new(0.42, 0.72, 0.16, 1.0), &mut materials));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
             }
             (AttackKind::Plant, AttackState::Travel) => {
                 let died = grow_plant(&mut a, &tuning, &barriers, &mut chicks, &mut sfx, dt);
-                draw_vine(&mut commands, &mut meshes, &a, 1.0);
+                draw_vine(&mut commands, &mut meshes, &mut a, 1.0);
                 // The head sits on the vine's tip, leaning along it; a bite lunges it forward.
                 let d = a.vel;
                 let s = plant_scale(&assets);
@@ -681,7 +686,7 @@ pub fn update_attacks(
                 let k = (a.t / tuning.plant_rot_time).min(1.0);
                 let keep = ((1.0 - k) * a.path.len() as f32).ceil() as usize;
                 a.path.truncate(keep.max(2));
-                draw_vine(&mut commands, &mut meshes, &a, 1.0 - k * 0.5);
+                draw_vine(&mut commands, &mut meshes, &mut a, 1.0 - k * 0.5);
                 let head = *a.path.last().unwrap_or(&a.pos);
                 let s = plant_scale(&assets) * (1.0 - k).max(0.01);
                 let droop = Quat::from_rotation_z(k * 1.3 * -a.vel.x.signum());

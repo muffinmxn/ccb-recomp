@@ -112,7 +112,7 @@ fn animate_bones(time: Res<Time>, mut models: Query<(&mut ModelInstance, &mut Bo
 
 /// A mesh is drawn only while its draw bone is visible (NW4R's per-bone visibility).
 /// Bones to keep visible whatever the clips say (e.g. an attack's black outline card,
-/// which the original game switches on from code).
+/// which the original game switches on from code); `"*"` shows every bone.
 #[derive(Component, Clone)]
 pub struct ShowBones(pub Vec<&'static str>);
 
@@ -134,7 +134,7 @@ fn apply_visibility(
         }
         for &(bone, mesh) in &inst.meshes {
             if let Ok(mut v) = vis.get_mut(mesh) {
-                let forced = show.is_some_and(|s| inst.bone_names.get(bone).is_some_and(|n| s.0.contains(&n.as_str())));
+                let forced = show.is_some_and(|s| s.0.contains(&"*") || inst.bone_names.get(bone).is_some_and(|n| s.0.contains(&n.as_str())));
                 let want = if forced || inst.bone_visible.get(bone).copied().unwrap_or(true) { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != want {
                     *v = want;

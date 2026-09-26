@@ -195,9 +195,13 @@ impl GameAssets {
         };
         let tex = self.textures.clone();
         let keep: Option<Vec<usize>> = bones.map(|list| model.bones.iter().enumerate().filter(|(_, b)| list.contains(&b.name.as_str())).map(|(i, _)| i).collect());
-        let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut GxMaterial| {
+        let tweak = move |m: &wii_formats::mdl0::Mesh, mat_name: &str, mat: &mut GxMaterial| {
             if keep.as_ref().is_some_and(|k| !k.contains(&m.bone)) {
                 return false;
+            }
+            // The plant hint ring's color comes from a konst register the game sets.
+            if mat_name == "plantCircleMat" {
+                mat.params.konst[0] = Vec4::new(1.0, 0.85, 0.1, 1.0);
             }
             if team == Team::Black {
                 if let Some(h) = mat.tex0.clone() {
@@ -211,9 +215,21 @@ impl GameAssets {
             true
         };
         let e = g3d::spawn_model_skinned(commands, self.root, model, &self.textures, meshes, materials, images, &tweak, self.skins.get(name).cloned());
-        // Attack models carry a black outline card that the game shows from code.
-        if model.bones.iter().any(|b| b.name == "outline") {
-            commands.entity(e).insert(crate::anim::ShowBones(vec!["outline"]));
+        // Attack models carry a black outline card that the game shows from code; models
+        // spawned in parts show their parts (their bones may start hidden until an intro clip).
+        match bones {
+            Some(list) => {
+                let mut show: Vec<&'static str> = vec!["outline"];
+                show.extend(list.iter().filter_map(|n| model.bones.iter().find(|b| b.name == *n).map(|b| &*b.name.clone().leak())));
+                commands.entity(e).insert(crate::anim::ShowBones(show));
+            }
+            None if model.bones.iter().any(|b| b.name == "outline") => {
+                commands.entity(e).insert(crate::anim::ShowBones(vec!["outline"]));
+            }
+            None if name == "plantCircle" => {
+                commands.entity(e).insert(crate::anim::ShowBones(vec!["*"]));
+            }
+            None => {}
         }
         commands.entity(e).insert(Transform::from_xyz(0.0, -100.0, 0.0).with_scale(Vec3::splat(self.scale(name, width))));
         e
@@ -395,7 +411,7 @@ pub fn start_match(
         let textures = g3d::load_textures(&[&common, &theme], &mut images);
         let clips = crate::anim::load_clips(&common)?;
         let mut models = HashMap::new();
-        for name in ["bomb", "weight", "explosion", "cloud", "cloudLightning", "plant"] {
+        for name in ["bomb", "weight", "explosion", "cloud", "cloudLightning", "plant", "plantCircle"] {
             if let Ok(m) = common.model(name) {
                 models.insert(name.to_string(), m);
             }

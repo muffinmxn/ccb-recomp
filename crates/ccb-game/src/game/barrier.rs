@@ -23,8 +23,10 @@ pub struct Barrier {
     pub age: f32,
     /// Seconds of hit flash left.
     pub flash: f32,
-    mesh: Handle<Mesh>,
     material: Handle<GxMaterial>,
+    /// The black outline stroke behind the colored one.
+    outline: Entity,
+    outline_material: Handle<GxMaterial>,
     dirty: bool,
 }
 
@@ -63,6 +65,36 @@ pub fn solid_material(color: Vec4) -> GxMaterial {
     GxMaterial { params: p, tex0: None, tex1: None, alpha_mode: AlphaMode::Blend, key: GxKey { cull: 0, depth_write: 0, color_write: 1 } }
 }
 
+/// A marker stroke along `points`: a ribbon with round caps at both ends.
+pub(super) fn stroke(points: &[Vec2], width: f32) -> Mesh {
+    let r = width * 0.5;
+    let mut pos: Vec<[f32; 3]> = Vec::new();
+    let mut idx: Vec<u32> = Vec::new();
+    let body = ribbon(points, width);
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = body.attribute(Mesh::ATTRIBUTE_POSITION) {
+        pos.extend_from_slice(p);
+    }
+    if let Some(Indices::U32(i)) = body.indices() {
+        idx.extend_from_slice(i);
+    }
+    for &c in [points.first(), points.last()].iter().flatten() {
+        let base = pos.len() as u32;
+        pos.push([c.x, c.y, 0.0]);
+        let n = 12;
+        for k in 0..=n {
+            let a = k as f32 / n as f32 * std::f32::consts::TAU;
+            pos.push([c.x + r * a.cos(), c.y + r * a.sin(), 0.0]);
+            if k > 0 {
+                idx.extend([base, base + k, base + k + 1]);
+            }
+        }
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
 /// Builds a ribbon mesh along the barrier's points.
 pub(super) fn ribbon(points: &[Vec2], thickness: f32) -> Mesh {
     let mut pos = Vec::new();
@@ -85,6 +117,9 @@ pub(super) fn ribbon(points: &[Vec2], thickness: f32) -> Mesh {
     m
 }
 
+/// Extra width of a line's black outline.
+const OUTLINE: f32 = 0.09;
+
 pub fn team_color(team: Team) -> Vec4 {
     match team {
         Team::Yellow => Vec4::new(1.0, 0.8, 0.0, 1.0),
@@ -102,16 +137,21 @@ pub fn spawn_barrier(
     materials: &mut Assets<GxMaterial>,
 ) -> Entity {
     debug!("{team:?} barrier from {:?} to {:?}", points.first(), points.last());
-    let mesh = meshes.add(ribbon(&points, tuning.barrier_thickness * 1.5));
+    let w = tuning.barrier_thickness * 1.5;
     let material = materials.add(solid_material(team_color(team)));
+    let outline_material = materials.add(solid_material(Vec4::new(0.0, 0.0, 0.0, 1.0)));
+    let outline = commands
+        .spawn((Mesh3d(meshes.add(stroke(&points, w + OUTLINE))), MeshMaterial3d(outline_material.clone()), Transform::from_xyz(0.0, 0.0, -0.02)))
+        .id();
     commands
         .spawn((
-            Barrier { team, points, drawing, age: 0.0, flash: 0.0, mesh: mesh.clone(), material: material.clone(), dirty: false },
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
+            Mesh3d(meshes.add(stroke(&points, w))),
+            MeshMaterial3d(material.clone()),
             Transform::from_xyz(0.0, 0.0, tuning.plane_z + 0.6),
             DespawnOnExit(crate::Screen::Level),
         ))
+        .insert(Barrier { team, points, drawing, age: 0.0, flash: 0.0, material, outline, outline_material, dirty: false })
+        .add_child(outline)
         .id()
 }
 
@@ -213,9 +253,10 @@ pub fn update_barriers(
             continue;
         }
         if b.dirty {
-            if let Some(mut mesh) = meshes.get_mut(&b.mesh) {
-                *mesh = ribbon(&b.points, tuning.barrier_thickness * 1.5);
-            }
+            // Render-world meshes can't be edited in place: swap in new ones.
+            let w = tuning.barrier_thickness * 1.5;
+            commands.entity(e).insert(Mesh3d(meshes.add(stroke(&b.points, w))));
+            commands.entity(b.outline).insert(Mesh3d(meshes.add(stroke(&b.points, w + OUTLINE))));
             b.dirty = false;
         }
         let fade = ((life - b.age) / tuning.barrier_fade_time.max(0.01)).clamp(0.0, 1.0);
@@ -225,6 +266,9 @@ pub fn update_barriers(
         if let Some(mut m) = materials.get_mut(&b.material) {
             m.params.konst[3].w = fade * blink;
             m.params.regs[2] = if flash { Vec4::ONE } else { team_color(b.team) };
+        }
+        if let Some(mut m) = materials.get_mut(&b.outline_material) {
+            m.params.konst[3].w = fade * blink;
         }
     }
     for team in 0..2 {
