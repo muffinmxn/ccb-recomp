@@ -9,6 +9,7 @@ pub mod lyt;
 pub mod lz;
 pub mod mdl0;
 pub mod rfnt;
+pub mod rsar;
 pub mod tpl;
 pub mod u8arc;
 pub mod vis0;

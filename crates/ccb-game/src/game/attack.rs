@@ -51,11 +51,13 @@ pub struct Attack {
     visual: Option<Entity>,
     effect: Option<Entity>,
     flash: Option<Entity>,
+    /// Weight variant (1..=6: TV, sofa, piano, metal, elephant, whale).
+    variant: usize,
 }
 
 impl Attack {
     pub fn new(kind: AttackKind, from: Team, quality: f32, target_x: f32) -> Self {
-        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None }
+        Self { kind, from, quality, state: AttackState::Prepare, t: 0.0, pos: Vec2::ZERO, vel: Vec2::ZERO, target_x, visual: None, effect: None, flash: None, variant: 1 }
     }
 
     pub fn target(&self) -> Team {
@@ -74,7 +76,19 @@ fn set_transform(commands: &mut Commands, e: Option<Entity>, t: Transform) {
     }
 }
 
-fn damage_chicks(chicks: &mut Query<&mut Chick>, center: Vec2, radius: f32, full_radius: f32, damage: f32, push: f32, squash: bool) -> usize {
+const OUCH: [&str; 5] = ["SFX_CHICKS_AUA01", "SFX_CHICKS_AUA02", "SFX_CHICKS_AUA03", "SFX_CHICKS_AUA04", "SFX_CHICKS_AUA05"];
+const WEIGHT_SOUNDS: [&str; 6] = [
+    "SFX_ATTACKS_WEIGHT_TV",
+    "SFX_ATTACKS_WEIGHT_SOFA",
+    "SFX_ATTACKS_WEIGHT_PIANO",
+    "SFX_ATTACKS_WEIGHT_METAL",
+    "SFX_ATTACKS_WEIGHT_ELEPHANT",
+    "SFX_ATTACKS_WEIGHT_WHALE",
+];
+
+#[allow(clippy::too_many_arguments)]
+fn damage_chicks(chicks: &mut Query<&mut Chick>, sfx: &mut crate::sfx::Sfx, center: Vec2, radius: f32, full_radius: f32, damage: f32, push: f32, squash: bool) -> usize {
+    let squash_time = 2.0;
     let mut hits = 0;
     for mut c in chicks.iter_mut() {
         if !c.alive() {
@@ -88,8 +102,13 @@ fn damage_chicks(chicks: &mut Query<&mut Chick>, center: Vec2, radius: f32, full
         let dir = (c.pos - center).normalize_or(Vec2::Y);
         let amount = damage * falloff.clamp(0.25, 1.0);
         c.damage(amount, (dir + Vec2::Y) * push * falloff);
+        if c.dying.is_some() {
+            sfx.play("SFX_CHICKS_DIE");
+        } else {
+            sfx.play_one_of(&OUCH, hits + (c.pos.x * 7.0).abs() as usize);
+        }
         if squash {
-            c.squashed = 2.0;
+            c.squashed = squash_time;
         }
         hits += 1;
     }
@@ -109,6 +128,7 @@ pub fn update_attacks(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let dt = time.delta_secs();
     let z = tuning.plane_z;
@@ -127,6 +147,7 @@ pub fn update_attacks(
                     let t = BOMB_FLIGHT_TIME;
                     a.pos = start;
                     a.vel = Vec2::new((tx - start.x) / t, (BOMB_RADIUS - start.y + 0.5 * BOMB_GRAVITY * t * t) / t);
+                    sfx.play("SFX_ATTACKS_BOMB_FLY");
                     a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, BOMB_RADIUS * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
@@ -141,6 +162,7 @@ pub fn update_attacks(
                     let v = a.vel;
                     a.vel = (v - 2.0 * v.dot(n) * n) * 0.6;
                     a.pos = p + n * (BOMB_RADIUS + 0.12);
+                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
                     if let Ok((_, mut b)) = barriers.get_mut(be) {
                         b.flash = 0.4;
                     }
@@ -153,10 +175,12 @@ pub fn update_attacks(
                     if let Some(v) = a.visual {
                         assets.play(&mut commands, v, "bomb__roll");
                     }
+                    sfx.play("SFX_ATTACKS_BOMB_COUNTDOWN");
                     a.state = AttackState::Roll;
                     a.t = 0.0;
                 }
                 if a.pos.x.abs() > 15.0 || a.pos.y < -3.0 {
+                    sfx.play("SFX_ATTACKS_BOMB_DEFUSED");
                     a.state = AttackState::Finished;
                 }
                 let spin = a.t * -a.from.side() * 4.0;
@@ -174,10 +198,11 @@ pub fn update_attacks(
                     let (rmin, rmax) = tuning.bomb_exp_radius;
                     let radius = rmin + (rmax - rmin) * a.quality;
                     let dmg = tuning.bomb_damage.damage(a.quality);
-                    damage_chicks(&mut chicks, a.pos, radius, tuning.bomb_exp_full_radius, dmg, 4.0, false);
+                    damage_chicks(&mut chicks, &mut sfx, a.pos, radius, tuning.bomb_exp_full_radius, dmg, 4.0, false);
                     if let Some(v) = a.visual.take() {
                         commands.entity(v).despawn();
                     }
+                    sfx.play("SFX_ATTACKS_BOMB_EXPL");
                     a.effect = Some(assets.spawn(&mut commands, "explosion", a.from, radius * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Impact;
                     a.t = 0.0;
@@ -190,6 +215,8 @@ pub fn update_attacks(
                     a.vel = Vec2::new(0.0, -2.0);
                     let variant = tuning.weight_quality_thresholds.iter().rposition(|&th| a.quality >= th).unwrap_or(0) + 1;
                     let v = assets.spawn_weight(&mut commands, variant, a.from, WEIGHT_HALF_WIDTH * 2.0, &mut meshes, &mut materials, &mut images);
+                    a.variant = variant;
+                    sfx.play("SFX_ATTACKS_WEIGHT_FLY");
                     a.visual = Some(v);
                     a.state = AttackState::Travel;
                     a.t = 0.0;
@@ -209,6 +236,7 @@ pub fn update_attacks(
                         b.flash = 0.4;
                     }
                     a.vel = Vec2::new(rng.range((-1.0, 1.0)), 3.0);
+                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
                     a.state = AttackState::Blocked;
                     a.t = 0.0;
                 } else {
@@ -218,7 +246,8 @@ pub fn update_attacks(
                     a.pos.y = 1.2;
                     let dmg = tuning.weight_damage.damage(a.quality);
                     let center = Vec2::new(a.pos.x, 0.5);
-                    damage_chicks(&mut chicks, center, WEIGHT_HALF_WIDTH + 0.4, WEIGHT_HALF_WIDTH, dmg, 1.0, true);
+                    sfx.play(WEIGHT_SOUNDS[a.variant.clamp(1, 6) - 1]);
+                    damage_chicks(&mut chicks, &mut sfx, center, WEIGHT_HALF_WIDTH + 0.4, WEIGHT_HALF_WIDTH, dmg, 1.0, true);
                     a.state = AttackState::Impact;
                     a.t = 0.0;
                 }
@@ -237,6 +266,7 @@ pub fn update_attacks(
             // ---------------------------------------------------------------- lightning
             (AttackKind::Lightning, AttackState::Prepare) => {
                 if a.visual.is_none() {
+                    sfx.play("SFX_ATTACKS_THUNDER_APPROACHING");
                     a.pos = Vec2::new(a.target_x, tuning.cloud_y);
                     a.visual = Some(assets.spawn(&mut commands, "cloud", a.from, 5.0, &mut meshes, &mut materials, &mut images));
                 }
@@ -251,14 +281,16 @@ pub fn update_attacks(
                             if let Ok((_, mut b)) = barriers.get_mut(be) {
                                 b.flash = 0.4;
                             }
+                            sfx.play("SFX_ENV_LINE_GROUNDED");
                             (y, true)
                         }
                         None => (0.0, false),
                     };
                     if !blocked {
                         let dmg = tuning.bomb_damage.damage(a.quality);
-                        damage_chicks(&mut chicks, Vec2::new(x, 0.8), STRIKE_RADIUS, STRIKE_RADIUS * 0.6, dmg, 2.0, false);
+                        damage_chicks(&mut chicks, &mut sfx, Vec2::new(x, 0.8), STRIKE_RADIUS, STRIKE_RADIUS * 0.6, dmg, 2.0, false);
                     }
+                    sfx.play("SFX_ATTACKS_THUNDER");
                     // The strike flash on the cloud.
                     let flash = assets.spawn_posed(&mut commands, "cloudLightning", "cloudLightning__spratzel", a.from, 5.0, &mut meshes, &mut materials, &mut images);
                     commands.entity(flash).insert(Transform::from_xyz(x, tuning.cloud_y, z + 0.2).with_scale(Vec3::splat(assets.scale("cloudLightning", 5.0))));
@@ -285,6 +317,7 @@ pub fn update_attacks(
                 // A mound telegraphs where the plant will come up.
                 if a.t >= tuning.attack_prepare_time {
                     a.pos = Vec2::new(a.target_x, -PLANT_HEIGHT);
+                    sfx.play("SFX_ATTACKS_PLANT_APPEAR");
                     a.visual = Some(assets.spawn_posed(&mut commands, "plant", "plant__intro", a.from, 2.4, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
@@ -299,6 +332,7 @@ pub fn update_attacks(
                         b.flash = 0.4;
                     }
                     a.pos.y = y - 1.2 - PLANT_HEIGHT * 0.5;
+                    sfx.play("SFX_ATTACKS_PLANT_ROTT");
                     a.state = AttackState::Blocked;
                     a.t = 0.0;
                 } else {
@@ -307,11 +341,12 @@ pub fn update_attacks(
                         // Two bites at chicks around the stem.
                         let dmg = tuning.bomb_damage.damage(a.quality) * 0.5;
                         for _ in 0..2 {
-                            damage_chicks(&mut chicks, Vec2::new(a.target_x, 0.8), PLANT_BITE_RADIUS, PLANT_BITE_RADIUS * 0.6, dmg, 1.5, false);
+                            damage_chicks(&mut chicks, &mut sfx, Vec2::new(a.target_x, 0.8), PLANT_BITE_RADIUS, PLANT_BITE_RADIUS * 0.6, dmg, 1.5, false);
                         }
                         if let Some(v) = a.visual {
                             assets.play(&mut commands, v, "plant__bite");
                         }
+                        sfx.play_one_of(&["SFX_ATTACKS_PLANT_BITE_1", "SFX_ATTACKS_PLANT_BITE_2", "SFX_ATTACKS_PLANT_BITE_3"], (a.quality * 10.0) as usize);
                         a.state = AttackState::Impact;
                         a.t = 0.0;
                     }

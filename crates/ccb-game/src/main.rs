@@ -15,6 +15,7 @@ mod hud;
 mod layout;
 mod level;
 mod pointer;
+mod sfx;
 mod shot;
 mod title;
 
@@ -92,6 +93,7 @@ fn main() -> AppExit {
         pointer::PointerPlugin,
         hud::HudPlugin,
         game::GamePlugin,
+        sfx::SfxPlugin,
     ))
     .add_systems(Update, title::hide_panes);
     if opts.screenshot.is_some() {

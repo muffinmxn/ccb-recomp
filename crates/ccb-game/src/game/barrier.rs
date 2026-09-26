@@ -127,6 +127,7 @@ pub fn player_draw_barrier(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut current: Local<Option<Entity>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let team = Team::Yellow;
     let can_draw = m.can_defend(team);
@@ -146,6 +147,7 @@ pub fn player_draw_barrier(
     let Some(p) = in_area else { return };
     match *current {
         None if pointer.just_pressed && ink.0[team.index()] > 0.2 => {
+            sfx.play("SFX_GAME_DRAW");
             *current = Some(spawn_barrier(&mut commands, team, vec![p, p], true, &tuning, &mut meshes, &mut materials));
         }
         Some(e) => {

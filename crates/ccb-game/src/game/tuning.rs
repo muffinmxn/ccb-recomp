@@ -8,6 +8,8 @@ use crate::data::GameData;
 /// Difficulty index into the cfg's `[KI_SELECTABLE_COUNT]` tables (0 easy, 1 medium, 2 hard).
 pub const DIFFICULTY: usize = 1;
 
+/// Some fields are read for completeness but not used by gameplay yet.
+#[allow(dead_code)]
 #[derive(Resource, Clone, Debug)]
 pub struct Tuning {
     // ingame.model.misc

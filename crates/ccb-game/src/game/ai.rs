@@ -45,11 +45,6 @@ pub struct Cpu {
     sides: [Side; 2],
 }
 
-impl Cpu {
-    pub fn controls(&self, team: Team) -> bool {
-        self.sides[team.index()].enabled
-    }
-}
 
 impl Cpu {
     pub fn load(data: &GameData) -> Result<Self> {

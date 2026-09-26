@@ -49,7 +49,7 @@ under `xvfb-run` with Mesa's software Vulkan driver).
 
 | Crate | Purpose |
 |---|---|
-| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0, TEX0, CHR0, VIS0), BRLYT/BRLAN layouts, BRFNT fonts, all GX texture formats |
+| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0, TEX0, CHR0, VIS0), BRLYT/BRLAN layouts, BRFNT fonts, BRSAR sounds (DSP-ADPCM), all GX texture formats |
 | `ccb-extract` | WAD → `extracted/` |
 | `ccb-assets` | the game's `cfg` tuning files and `msgs` string tables |
 | `ccb-tools` | developer dump tools |

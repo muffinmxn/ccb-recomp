@@ -137,6 +137,7 @@ fn menu_buttons(
     mut panes: Query<(&mut layout::LayoutPane, &GlobalTransform, &InheritedVisibility)>,
     mut next: ResMut<NextState<Screen>>,
     mut opts: ResMut<crate::Options>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     for (root, mut menu) in &mut menus {
         let step = time.delta_secs() / menu.rollover_time.max(1e-3);
@@ -147,6 +148,9 @@ fn menu_buttons(
                     panes.get(e).is_ok_and(|(pane, gt, vis)| vis.get() && layout::pane_contains(&pane, gt, p))
                 })
             });
+            if hovered && menu.hover[i] == 0.0 {
+                sfx.play("SFX_MENU_BTN_ROLLOVER");
+            }
             let h = (menu.hover[i] + if hovered { step } else { -step }).clamp(0.0, 1.0);
             menu.hover[i] = h;
             let mul = 1.0 + menu.rollover_inc * h;
@@ -157,6 +161,7 @@ fn menu_buttons(
             }
             if hovered && pointer.just_pressed {
                 info!("menu: {action:?}");
+                sfx.play("SFX_MENU_BTN_CLICK");
                 match action {
                     MenuAction::Play => {
                         opts.level = Some("city.1".into());

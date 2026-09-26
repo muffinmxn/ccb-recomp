@@ -8,5 +8,5 @@ license.workspace = true
 wii-formats = { path = "../wii-formats" }
 ccb-assets = { path = "../ccb-assets" }
 anyhow = "1"
-bevy = "0.19.1"
+bevy = { version = "0.19.1", features = ["wav"] }
 bytemuck = { version = "1", features = ["derive"] }

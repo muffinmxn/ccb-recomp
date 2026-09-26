@@ -84,7 +84,6 @@ impl Match {
 /// Models and textures used by gameplay, from `common.brres` and the level's theme archive.
 #[derive(Resource)]
 pub struct GameAssets {
-    pub chick: ChickAssets,
     models: HashMap<String, Model>,
     widths: HashMap<String, f32>,
     textures: HashMap<String, (Handle<Image>, [u32; 2])>,
@@ -317,7 +316,7 @@ pub fn start_match(
             winner: None,
             hud_anim: Some(format!("hud_clockStart{side}")),
         });
-        commands.insert_resource(GameAssets { chick: chick_assets, models, widths, textures, clips, root });
+        commands.insert_resource(GameAssets { models, widths, textures, clips, root });
         commands.insert_resource(tuning);
         Ok(())
     })();
@@ -396,6 +395,7 @@ pub fn run_match(
     chicks: Query<&Chick>,
     attacks: Query<&Attack>,
     mut next: ResMut<NextState<Screen>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let dt = time.delta_secs();
     if !matches!(m.phase, Phase::GameOver(_)) {
@@ -405,6 +405,7 @@ pub fn run_match(
             if alive(t) == 0 && !chicks.iter().any(|c| c.team == t && c.dying.is_some()) {
                 m.winner = Some(t.other());
                 m.phase = Phase::GameOver(0.0);
+                sfx.play(if t.other() == Team::Yellow { "SFX_GAME_WIN" } else { "SFX_GAME_OVER" });
                 m.selected = None;
                 info!("game over: {:?} wins", t.other());
             }
@@ -421,7 +422,12 @@ pub fn run_match(
             };
         }
         Phase::Attack => {
+            let before = m.turn_timer;
             m.turn_timer -= dt;
+            // Tick through the last five seconds.
+            if before.ceil() != m.turn_timer.ceil() && m.turn_timer > 0.0 && m.turn_timer <= 5.0 {
+                sfx.play("SFX_ATTACK_IFC_CLOCK_TICK");
+            }
             if let Some((kind, quality)) = m.pending.take() {
                 // Aim at a living chick; a weaker trace aims worse.
                 let target = m.attacker.other();
@@ -433,7 +439,9 @@ pub fn run_match(
                 let e = commands.spawn((Attack::new(kind, m.attacker, quality, tx), DespawnOnExit(Screen::Level))).id();
                 m.attack = Some(e);
                 m.phase = Phase::Incoming;
+                sfx.play("SFX_ATTACK_IFC_LAUNCH");
             } else if m.turn_timer <= 0.0 {
+                sfx.play("SFX_ATTACK_IFC_CLOCK_END");
                 let next_team = m.attacker.other();
                 m.start_turn(next_team, &tuning);
             }
@@ -471,12 +479,16 @@ pub fn player_attack_buttons(
     mut transforms: Query<(&mut Transform, &MeshMaterial3d<GxMaterial>)>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut hover: Local<HashMap<Entity, f32>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let my_turn = m.phase == Phase::Attack && m.attacker == Team::Yellow && m.pending.is_none();
     for (e, b) in &buttons {
         let usable = my_turn && b.kind.implemented() && m.selected.is_none();
         let over = pointer.pos.is_some_and(|p| p.distance(b.center) < b.size * 0.5);
         let h = hover.entry(e).or_insert(0.0);
+        if over && usable && *h == 0.0 {
+            sfx.play("SFX_ATTACK_IFC_SELECTOR_ROLLOVER");
+        }
         *h = (*h + if over && usable { 10.0 } else { -10.0 } * time.delta_secs()).clamp(0.0, 1.0);
         let grow = (1.0 + 0.1 * *h) * if m.selected == Some(b.kind) { 1.12 } else { 1.0 };
         // Out of turn the icons grey out (the background stays solid).
@@ -503,6 +515,7 @@ pub fn player_attack_buttons(
         }
         if over && usable && pointer.just_pressed {
             info!("player selects {:?}", b.kind);
+            sfx.play("SFX_ATTACK_IFC_SELECTOR_ACTIVATED");
             m.selected = Some(b.kind);
         }
     }

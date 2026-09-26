@@ -119,6 +119,7 @@ pub fn player_gesture(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let panel = tuning.gesture_panel[Team::Yellow.index()];
     // Start a new trace when an attack is selected.
@@ -144,6 +145,7 @@ pub fn player_gesture(
     let Some(kind) = trace.kind else { return };
     let on_cancel = pointer.pos.is_some_and(|p| p.distance(panel + Vec2::new(85.0, -53.0)) < 25.0);
     if buttons.just_pressed(MouseButton::Right) || (pointer.just_pressed && on_cancel && !trace.started) {
+        sfx.play("SFX_ATTACK_IFC_DRAWING_CANCELLED");
         m.selected = None;
         return;
     }
@@ -154,6 +156,7 @@ pub fn player_gesture(
         if next < trace.dots.len() && p.distance(trace.dots[next]) <= radius && (trace.started || next == 0) {
             trace.started = true;
             trace.next += 1;
+            sfx.play("SFX_ATTACK_IFC_DOT_HIT");
             let c = trace.clock;
             trace.times.push(c);
         }
@@ -171,6 +174,13 @@ pub fn player_gesture(
     if finished || released {
         let q = trace_quality(&trace.times, trace.dots.len(), tuning.gesture_timing);
         info!("gesture {kind:?}: {}/{} dots, quality {:.0}%", trace.next, trace.dots.len(), q * 100.0);
+        sfx.play(if !finished {
+            "SFX_ATTACK_IFC_DRAWING_INTERRUPTED"
+        } else if q >= 0.95 {
+            "SFX_ATTACK_IFC_DRAWING_PERFECT"
+        } else {
+            "SFX_ATTACK_IFC_DRAWING_SUCCESS"
+        });
         m.pending = Some((kind, q));
         m.selected = None;
     }

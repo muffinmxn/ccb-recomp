@@ -36,7 +36,7 @@ levels, camera, menus) can be read straight from data instead of reverse enginee
 | `layouts/*.arc` | U8 of BRLYT/BRLAN/BRFNT/TPL | a 2D layout renderer for menus and HUD |
 | `gfx/*.breff/.breft` | NW4R EF particles | approximate with Bevy particles |
 | `sounds/*.ogg` | Ogg Vorbis music | play directly |
-| `sounds/ccb_ingame.brsar` | NW4R sound archive (RWSD/RBNK/RWAR) | extract ADPCM SFX → PCM |
+| `sounds/ccb_ingame.brsar` | NW4R sound archive (RWSD/RWAR/RWAV) | done: all 100 SFX decode (DSP-ADPCM → PCM) |
 
 ## Workspace layout
 
@@ -80,10 +80,11 @@ docs/            per-subsystem reverse-engineering notes
   - [x] Gestures: control points from the `blueprints` layout, quality from `ingame.model.gesture` timings.
   - [x] Attacks: bomb (arc, deflects off barriers, explodes), weight (variant by quality, blocked by roofs), plant (grows from below, blocked by lids), lightning (level special, blocked by rods/roofs). Damage from the cfg damage settings.
   - [x] Attack interface like the original 1P screen: basic attacks bottom right, level special on the arc, gesture panel bottom left.
-  - [ ] UFO/ghost/octopus specials and the "race" for specials, attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side, sound effects.
+  - [ ] UFO/ghost/octopus specials and the "race" for specials, attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side.
 - [x] **M6 AI (`ki.cfg`).** CPU attacks after `kiAttackStartTimer` + reaction time with drawing skill/quality per gesture, and defends by drawing shields at `kiDefendByShieldHeight` over the predicted impact, with a difficulty-based miss chance. `CCB_AUTOPLAY=1` lets the CPU play both sides.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**
-- [ ] **M8 Polish.** Particles, SFX from BRSAR, 2-player local, widescreen and high resolution.
+- [ ] **M8 Polish.** Particles, 2-player local, widescreen and high resolution.
+  - [x] Sound effects: BRSAR → RWSD → RWAR → RWAV, DSP-ADPCM decoder; menus, gestures, clock, attacks, chicks wired to the original SFX.
 
 Where the data doesn't say how something behaves, we reverse engineer it from `main.dol`
 (Ghidra, or decomp-toolkit's analysis) and record the findings in `docs/`.
