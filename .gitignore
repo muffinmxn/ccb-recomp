@@ -1,0 +1,6 @@
+/target
+# Game data and keys are never committed. Bring your own legally dumped WAD.
+*.wad
+/extracted/
+/keys/
+/generated/
