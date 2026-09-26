@@ -100,6 +100,7 @@ pub struct Tuning {
     // environment
     pub cloud_y: f32,
     pub sp: SpecialTuning,
+    pub up: UpgradeTuning,
     // gesture
     /// (total time for 100%, total time for 0%, per-dot time for 100%, per-dot time for min, min per-dot quality)
     pub gesture_timing: [f32; 5],
@@ -227,6 +228,49 @@ impl DamageSettings {
             self.threshold_damage + (self.max - self.threshold_damage) * ((quality - self.threshold) / (1.0 - self.threshold).max(1e-3))
         }
     }
+}
+
+/// Upgraded attacks (`upgrade*` in `ingame.model.gesture`, the glue/acid/sick settings).
+#[derive(Clone, Debug)]
+pub struct UpgradeTuning {
+    /// `upgradeAMinQuality` / `upgradeBMinQuality`: trace quality that offers the green / red target.
+    pub a_min: f32,
+    pub b_min: f32,
+    /// `upgradeTargetRedR`, `upgradeDotsCollisionDistanceWhite`: hit radii on the target.
+    pub red_r: f32,
+    pub hit_r: f32,
+    pub target_appear: f32,
+    /// `chickSickFac` (hop slowdown) and `chickSickDmgIncreasePer` (extra damage taken).
+    pub sick_fac: f32,
+    pub sick_dmg: f32,
+    pub sick_time: (f32, f32),
+    pub confused_time: (f32, f32),
+    pub weight_glue_count: usize,
+    pub bomb_cluster_count: usize,
+    pub bomb_acid_count: usize,
+    pub glue_width: f32,
+    pub glue_active: f32,
+    pub acid_width: f32,
+    pub acid_active: f32,
+    pub acid_fade: f32,
+    pub acid_dmg: f32,
+    pub acid_cooldown: f32,
+    pub acid_shrink: f32,
+    pub mini: MiniBomb,
+}
+
+/// `ingame.model.attack.bomb.mini`: the ladybug bomb's babies.
+#[derive(Clone, Debug)]
+pub struct MiniBomb {
+    pub damage: DamageSettings,
+    pub exp_radius: (f32, f32),
+    pub move_by: (f32, f32),
+    pub start_ticking: f32,
+    pub roll_time: f32,
+    pub tick_time: f32,
+    pub scale: f32,
+    /// Launch velocity and per-step damping, one per lane.
+    pub lanes: Vec<(Vec2, f32)>,
 }
 
 impl Tuning {
@@ -441,6 +485,51 @@ impl Tuning {
                     tentacle_time_till_hit: at.f32("tentacleTimeTillHit").unwrap_or(1.57),
                     tentacle_hit_time: at.f32("tentacleHitTime").unwrap_or(0.22),
                     tentacle_damage: dmg("tentacleDamageSettings"),
+                }
+            },
+            up: {
+                let mini = cfg.block("ingame.model.attack.bomb.mini")?;
+                let n = |b: &ccb_assets::cfg::Block, l: &str, d: f32| b.f32(l).unwrap_or(d);
+                let r = |b: &ccb_assets::cfg::Block, l: &str, d: (f32, f32)| b.range(l).unwrap_or(d);
+                UpgradeTuning {
+                    a_min: n(ges, "upgradeAMinQuality", 0.8),
+                    b_min: n(ges, "upgradeBMinQuality", 0.9),
+                    red_r: n(ges, "upgradeTargetRedR", 7.0),
+                    hit_r: n(ges, "upgradeDotsCollisionDistanceWhite", 24.0),
+                    target_appear: n(ges, "upgradeTargetAppearingTimer", 0.2),
+                    sick_fac: n(chick, "chickSickFac", 0.5),
+                    sick_dmg: n(chick, "chickSickDmgIncreasePer", 0.5),
+                    sick_time: r(at, "plantSickDurationMin", (45.0, 50.0)),
+                    confused_time: r(at, "plantConfusedDurationMin", (45.0, 50.0)),
+                    weight_glue_count: n(at, "weightGlueCount", 2.0) as usize,
+                    bomb_cluster_count: n(at, "bombClusterCount", 2.0) as usize,
+                    bomb_acid_count: n(at, "bombAcidMaxDropCount", 2.0) as usize,
+                    glue_width: n(at, "glueWidth", 2.0),
+                    glue_active: n(at, "glueActiveTime", 4.0),
+                    acid_width: n(at, "acidWidth", 3.0),
+                    acid_active: n(at, "acidActiveTime", 8.0),
+                    acid_fade: n(at, "acidDisappearTimer", 1.0),
+                    acid_dmg: n(at, "acidMaxDmg", 6.0),
+                    acid_cooldown: n(at, "acidDmgCooldown", 0.75),
+                    acid_shrink: n(at, "acidDeltaWidthDecrement", 0.1),
+                    mini: MiniBomb {
+                        damage: DamageSettings::from(&mini.floats("bombDamageSettings").unwrap_or_default()),
+                        exp_radius: (n(mini, "bombExpMinRadius", 2.0), n(mini, "bombExpMaxRadius", 3.5)),
+                        move_by: (n(mini, "bombMinMoveByDistance", 0.07), n(mini, "bombMaxMoveByDistance", 0.2)),
+                        start_ticking: n(mini, "bombStartTicking", 1.75),
+                        roll_time: n(mini, "bombRollTimer", 1.5),
+                        tick_time: n(mini, "bombTickTimer", 0.3),
+                        scale: n(mini, "scaleFac", 0.75),
+                        lanes: mini
+                            .lines
+                            .iter()
+                            .filter(|l| l.label.is_none() && l.values.len() == 4)
+                            .map(|l| {
+                                let v: Vec<f32> = l.values.iter().map(|v| num(v)).collect();
+                                (Vec2::new(v[0], v[1]), v[3])
+                            })
+                            .collect(),
+                    },
                 }
             },
             gesture_timing,

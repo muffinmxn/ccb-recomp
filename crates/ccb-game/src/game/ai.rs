@@ -59,6 +59,11 @@ struct Side {
     planned: Option<(Entity, f32)>,
     line: Option<CpuLine>,
     cooldown: f32,
+    /// Seconds since the attack was traced, the upgrade it hit, and the one it will go for
+    /// (upgrade, at seconds).
+    armed_t: f32,
+    upgrade: u8,
+    upgrade_plan: Option<(u8, f32)>,
 }
 
 /// Wobble limits for a defence line (`kiBarrierDistortionDefend*Max{X,Y}`).
@@ -98,6 +103,10 @@ pub struct KiParams {
     fac_delay: f32,
     wobble: HashMap<&'static str, Wobble>,
     fac_wobble: f32,
+    /// `kiAttackUseUpgradePropability`, `kiAttackWithUpgradeRedPropability`, `kiUpgradeHitTime`.
+    use_upgrade: f32,
+    red_upgrade: f32,
+    upgrade_hit_time: (f32, f32),
 }
 
 #[derive(Resource)]
@@ -187,6 +196,9 @@ impl Cpu {
             fac_delay: one("kiFacDefendDelay", 1.0),
             wobble,
             fac_wobble: one("kiFacBarrierDistortion", 1.0),
+            use_upgrade: one("kiAttackUseUpgradePropability", 0.35),
+            red_upgrade: one("kiAttackWithUpgradeRedPropability", 0.35),
+            upgrade_hit_time: range("kiUpgradeHitTime", (0.6, 0.9)),
         };
         Ok(Self {
             ki,
@@ -324,6 +336,7 @@ pub fn cpu_turn(
     mut barriers: Query<&mut Barrier>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
+    mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let dt = time.delta_secs();
     let ki = cpu.ki.clone();
@@ -355,6 +368,21 @@ pub fn cpu_turn(
                     let left = left - dt;
                     if left <= 0.0 {
                         side.armed = Some((kind, quality, arm_time()));
+                        side.armed_t = 0.0;
+                        side.upgrade = 0;
+                        side.upgrade_plan = None;
+                        // A good trace brings up the target; the CPU sometimes shoots it.
+                        if quality >= tuning.up.a_min && rng.chance(ki.use_upgrade) {
+                            let red = quality >= tuning.up.b_min && rng.chance(ki.red_upgrade);
+                            let at = rng.range(ki.upgrade_hit_time);
+                            side.upgrade_plan = Some((if red { 2 } else { 1 }, at));
+                            side.armed = Some((kind, quality, arm_time().max(at + 0.4)));
+                        }
+                        // Debug: CCB_FORCE_UPGRADE=1|2 makes the CPU always take that upgrade.
+                        if let Some(u) = std::env::var("CCB_FORCE_UPGRADE").ok().and_then(|v| v.parse::<u8>().ok()) {
+                            side.upgrade_plan = Some((u, 0.7));
+                            side.armed = Some((kind, quality, 1.1));
+                        }
                         side.drawing = None;
                         side.think = 0.0;
                     } else {
@@ -367,6 +395,13 @@ pub fn cpu_turn(
         }
         // A traced attack sits on its platform for a moment, then fires.
         if let Some((kind, quality, left)) = side.armed {
+            side.armed_t += dt;
+            if let Some((u, at)) = side.upgrade_plan.filter(|p| side.armed_t >= p.1) {
+                let _ = at;
+                side.upgrade = u;
+                side.upgrade_plan = None;
+                sfx.play(if u == 2 { "SFX_ATTACK_IFC_UPGRADE_TARGET_02" } else { "SFX_ATTACK_IFC_UPGRADE_TARGET_01" });
+            }
             let left = left - dt;
             if left > 0.0 {
                 side.armed = Some((kind, quality, left));
@@ -374,8 +409,8 @@ pub fn cpu_turn(
                 side.armed = None;
                 if kind.is_basic() {
                     if m.phase == Phase::Attack && m.attacker == team && m.pending.is_none() {
-                        info!("cpu ({team:?}) attacks with {kind:?} at {:.0}%", quality * 100.0);
-                        m.pending = Some((kind, quality));
+                        info!("cpu ({team:?}) attacks with {kind:?} at {:.0}% (upgrade {})", quality * 100.0, side.upgrade);
+                        m.pending = Some((kind, quality, side.upgrade));
                     }
                 } else if m.pending_special.is_none() && m.special.is_some_and(|(k, _)| k == kind) {
                     m.pending_special = Some((team, kind, quality));
@@ -407,8 +442,12 @@ pub fn cpu_turn(
             _ => {}
         }
         // What this side's attack interface shows.
+        view.target[team.index()] = side
+            .armed
+            .filter(|(kind, quality, _)| kind.is_basic() && *quality >= tuning.up.a_min && side.upgrade == 0)
+            .map(|(_, quality, _)| super::attack_ui::upgrade_target(side.armed_t, quality >= tuning.up.b_min, tuning.up.target_appear));
         view.mode[team.index()] = if let Some((kind, quality, _)) = side.armed {
-            Mode::Armed { kind, quality }
+            Mode::Armed { kind, quality, upgrade: side.upgrade }
         } else if let Some((kind, left, quality)) = side.drawing.or(side.special) {
             let total = if side.drawing.is_some() { side.drawing_total } else { side.special_total };
             let k = (1.0 - left / total.max(1e-3)).clamp(0.0, 1.0);

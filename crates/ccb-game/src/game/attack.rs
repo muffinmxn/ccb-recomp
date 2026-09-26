@@ -20,6 +20,8 @@ const BOMB_DAMP: f32 = 0.02;
 const BOMB_LOOK: f32 = 2.8;
 const WEIGHT_GRAVITY: f32 = 30.0;
 const WEIGHT_START_Y: f32 = 16.0;
+/// Take-off speed of the sumo's second jump.
+const SUMO_BOUNCE: f32 = 14.0;
 const STRIKE_RADIUS: f32 = 1.3;
 /// Plant head size (`plantHeadSize`) and vine thickness.
 const PLANT_HEAD: f32 = 1.7;
@@ -90,6 +92,12 @@ pub struct Attack {
     wait: f32,
     /// Blown up early (lightning, touched while drawing): quality to explode with.
     pub detonate: Option<f32>,
+    /// Upgrade: 0 none, 1 green (A), 2 red (B).
+    pub upgrade: u8,
+    /// Spawned by another attack (cluster bombs); the turn waits for these too.
+    pub child: bool,
+    /// The model used for its look (upgrades swap it).
+    model: &'static str,
 }
 
 impl Attack {
@@ -124,7 +132,15 @@ impl Attack {
             life: 0.0,
             wait: 0.0,
             detonate: None,
+            upgrade: 0,
+            child: false,
+            model: "",
         }
+    }
+
+    pub fn upgraded(mut self, upgrade: u8) -> Self {
+        self.upgrade = upgrade;
+        self
     }
 
     pub fn target(&self) -> Team {
@@ -196,7 +212,7 @@ fn ufo_tilt(dx: f32) -> Quat {
 
 /// Model scale for a weight variant `size` wide.
 fn weight_scale(assets: &GameAssets, variant: usize, size: f32) -> f32 {
-    size / assets.weight_visible.get(variant.clamp(1, 6) - 1).copied().unwrap_or(1.5)
+    size / assets.weight_visible.get(variant.clamp(1, 7) - 1).copied().unwrap_or(1.5)
 }
 
 /// A falling weight's shadow: a flat ellipse on the ground, `width` wide.
@@ -205,8 +221,9 @@ fn shadow_transform(x: f32, z: f32, width: f32) -> Transform {
 }
 
 /// Model scale that makes the flytrap head `plantHeadSize` wide.
-fn plant_scale(assets: &GameAssets) -> f32 {
-    PLANT_HEAD / assets.bone_width("plant", "head").max(1e-3)
+fn plant_scale(assets: &GameAssets, model: &str) -> f32 {
+    let model = if model.is_empty() { "plant" } else { model };
+    PLANT_HEAD / assets.bone_width(model, "head").max(1e-3)
 }
 
 /// Rebuilds the vine's ribbons along the plant's path.
@@ -304,6 +321,17 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
                     c.damage(dmg, push);
                     sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { "SFX_CHICKS_AUA02" });
                     a.starving = 0.0;
+                    // Scorpion Fern poisons, Fire Flower confuses.
+                    let mid = |r: (f32, f32)| (r.0 + r.1) / 2.0;
+                    match a.upgrade {
+                        1 => {
+                            c.sick = mid(tuning.up.sick_time);
+                            c.sick_extra = tuning.up.sick_dmg;
+                            sfx.play("SFX_ATTACKS_PLANT_TOXIC_BITE");
+                        }
+                        2 => c.confused = mid(tuning.up.confused_time),
+                        _ => {}
+                    }
                 }
             }
             sfx.play_one_of(&["SFX_ATTACKS_PLANT_BITE_1", "SFX_ATTACKS_PLANT_BITE_2", "SFX_ATTACKS_PLANT_BITE_3"], a.path.len());
@@ -458,7 +486,13 @@ pub fn update_attacks(
                     a.pos = start;
                     a.vel = Vec2::new(bomb_throw_vx(start, a.target_x, a.size, tuning.gravity), BOMB_START_VY);
                     sfx.play("SFX_ATTACKS_BOMB_FLY");
-                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, a.size * BOMB_LOOK, &mut meshes, &mut materials, &mut images));
+                    // Frog Cracker (green) and Ladybug Boom (red) have their own looks.
+                    a.model = match a.upgrade {
+                        1 => "bombA",
+                        2 => "bombB",
+                        _ => "bomb",
+                    };
+                    a.visual = Some(assets.spawn_posed(&mut commands, a.model, &format!("{}__fly", a.model), a.from, a.size * BOMB_LOOK, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
@@ -469,7 +503,11 @@ pub fn update_attacks(
                 // 180 Hz steps: gravity, damping, bounces off lines and the floor.
                 let h = 1.0 / tuning.physics_fps;
                 let steps = ((dt / h).round() as usize).clamp(1, 20);
-                let damp = if rolling { 1.0 - 3.0 * h } else { 1.0 - BOMB_DAMP };
+                // Mini bombs flutter down on their wings (`bomb.mini` lanes damp hard).
+                let air_damp = if a.child { tuning.up.mini.lanes.first().map_or(0.06, |l| l.1) } else { BOMB_DAMP };
+                let damp = if rolling { 1.0 - 3.0 * h } else { 1.0 - air_damp };
+                let model = if a.model.is_empty() { "bomb" } else { a.model };
+                let (roll_time, tick_time) = if a.child { (tuning.up.mini.roll_time + a.wait, tuning.up.mini.tick_time) } else { (tuning.bomb_roll_time, tuning.bomb_tick_time) };
                 for _ in 0..steps {
                     a.vel.y += tuning.gravity * h;
                     a.vel *= damp;
@@ -515,10 +553,10 @@ pub fn update_attacks(
                         }
                     }
                 }
-                if !rolling && a.pos.y <= tuning.bomb_roll_y + r && a.pos.x * target.side() > 0.0 {
+                if !rolling && a.vel.y <= 0.0 && a.pos.y <= tuning.bomb_roll_y + r && a.pos.x * target.side() > 0.0 {
                     // `bombRollYThreshold`: down on the field, the fuse is burning.
                     if let Some(v) = a.visual {
-                        assets.play(&mut commands, v, "bomb__roll");
+                        assets.play(&mut commands, v, &format!("{model}__roll"));
                     }
                     a.state = AttackState::Roll;
                     a.t = 0.0;
@@ -529,23 +567,60 @@ pub fn update_attacks(
                     a.state = AttackState::Finished;
                 }
                 // Ticks every `bombTickTimer`.
-                if rolling && (a.t / tuning.bomb_tick_time).floor() != ((a.t - dt) / tuning.bomb_tick_time).floor() {
+                if rolling && (a.t / tick_time).floor() != ((a.t - dt) / tick_time).floor() {
                     sfx.play("SFX_ATTACKS_BOMB_COUNTDOWN");
                 }
                 let spin = -a.pos.x / r;
                 let pulse = if rolling { 1.0 + 0.12 * (a.t * 18.0).sin() } else { 1.0 };
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale("bomb", r * BOMB_LOOK) * pulse)));
-                if a.state != AttackState::Finished && ((rolling && a.t >= tuning.bomb_roll_time) || a.detonate.is_some()) {
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale(model, r * BOMB_LOOK) * pulse)));
+                if a.state != AttackState::Finished && ((rolling && a.t >= roll_time) || a.detonate.is_some()) {
                     let q = a.detonate.take().unwrap_or(a.quality).max(a.quality);
-                    let (rmin, rmax) = tuning.bomb_exp_radius;
+                    let mini = &tuning.up.mini;
+                    let ((rmin, rmax), damage, move_by) = if a.child { (mini.exp_radius, mini.damage, mini.move_by) } else { (tuning.bomb_exp_radius, tuning.bomb_damage, tuning.bomb_move_by) };
                     let radius = rmin + (rmax - rmin) * q;
-                    let dmg = tuning.bomb_damage.damage(q);
-                    let push = tuning.bomb_move_by.0 + (tuning.bomb_move_by.1 - tuning.bomb_move_by.0) * q;
+                    let dmg = damage.damage(q);
+                    let push = move_by.0 + (move_by.1 - move_by.0) * q;
                     blast(&mut chicks, &barriers, &mut sfx, a.pos, radius, tuning.bomb_exp_full_radius, dmg, push * 30.0);
                     if let Some(v) = a.visual.take() {
                         commands.entity(v).despawn();
                     }
-                    sfx.play("SFX_ATTACKS_BOMB_EXPL");
+                    sfx.play(match (a.child, a.upgrade) {
+                        (true, _) => "SFX_ATTACKS_BOMB_CLUSTER_EXPL",
+                        (_, 1) => "SFX_ATTACKS_BOMB_ACID_EXPLOSION",
+                        _ => "SFX_ATTACKS_BOMB_EXPL",
+                    });
+                    match a.upgrade {
+                        // Frog Cracker: acid splashes out and eats at chicks where it lands.
+                        1 => {
+                            let n = tuning.up.bomb_acid_count;
+                            for i in 0..n {
+                                let side = i as f32 - (n as f32 - 1.0) / 2.0;
+                                let vel = Vec2::new(side * 5.0 + rng.range((-1.0, 1.0)), rng.range((7.0, 10.0)));
+                                super::upgrade::spawn_hazard(&mut commands, &assets, &tuning, super::upgrade::HazardKind::Acid, target, a.pos + Vec2::Y * 0.3, vel, &mut meshes, &mut materials, &mut images);
+                            }
+                        }
+                        // Ladybug Boom: its babies flutter out and go off one after another.
+                        2 if !a.child => {
+                            for i in 0..tuning.up.bomb_cluster_count {
+                                let lanes = &tuning.up.mini.lanes;
+                                let lane = lanes.get(rng.range((0.0, lanes.len() as f32)) as usize).map_or(Vec2::new(5.0, 20.0), |l| l.0);
+                                let dir = if i % 2 == 0 { -1.0 } else { 1.0 };
+                                let mut b = Attack::new(AttackKind::Bomb, a.from, a.quality, a.pos.x);
+                                b.against = a.against;
+                                b.child = true;
+                                b.model = "bombB";
+                                b.state = AttackState::Travel;
+                                b.pos = a.pos + Vec2::Y * 0.3;
+                                b.vel = Vec2::new(lane.x * dir, lane.y);
+                                b.size = tuning.bomb_min_size * mini.scale;
+                                b.wait = tuning.up.mini.start_ticking - tuning.up.mini.roll_time + i as f32 * 0.5;
+                                b.visual = Some(assets.spawn_posed(&mut commands, "bombB", "bombB__flutter", a.from, b.size * BOMB_LOOK, &mut meshes, &mut materials, &mut images));
+                                commands.spawn((b, DespawnOnExit(crate::Screen::Level)));
+                            }
+                        }
+                        _ => {}
+                    }
+                    a.size = radius;
                     a.quality = q;
                     a.effect = Some(assets.spawn(&mut commands, "explosion", a.from, radius * 2.0, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Impact;
@@ -559,12 +634,27 @@ pub fn update_attacks(
                     let variant = tuning.weight_quality_thresholds.iter().rposition(|&th| a.quality >= th).unwrap_or(0) + 1;
                     a.variant = variant;
                     a.size = tuning.weight_widths.get(variant - 1).copied().unwrap_or(4.0);
+                    // Sumo Chick (red) is its own weight.
+                    if a.upgrade == 2 {
+                        a.variant = 7;
+                    }
                     let (lo, hi) = tuning.side_range(target);
                     let border = tuning.weight_border_offset.min((hi - lo) / 2.0);
                     a.target_x = a.target_x.clamp(lo + border, hi - border);
                     a.pos = Vec2::new(a.target_x, WEIGHT_START_Y);
                     // Its shadow shows where it will land.
                     a.aux = Some(assets.spawn_shadow(&mut commands, z, &mut meshes, &mut materials));
+                    // Chick Fixer (green): glue drops on the chicks nearest the drop first.
+                    if a.upgrade == 1 {
+                        let mut near: Vec<Vec2> = chicks.iter().filter(|(_, c)| c.team == target && c.alive()).map(|(_, c)| c.pos).collect();
+                        let tx = a.target_x;
+                        near.sort_by(|p, q| (p.x - tx).abs().total_cmp(&(q.x - tx).abs()));
+                        for p in near.iter().take(tuning.up.weight_glue_count) {
+                            let at = Vec2::new(p.x, WEIGHT_START_Y * 0.6);
+                            super::upgrade::spawn_hazard(&mut commands, &assets, &tuning, super::upgrade::HazardKind::Glue, target, at, Vec2::new(0.0, -10.0), &mut meshes, &mut materials, &mut images);
+                        }
+                        sfx.play("SFX_ATTACKS_WEIGHT_GLUE");
+                    }
                 }
                 let k = (a.t / (tuning.attack_prepare_time * 0.6)).min(1.0);
                 set_transform(&mut commands, a.aux, shadow_transform(a.target_x, z, a.size * (0.3 + 0.3 * k)));
@@ -584,8 +674,10 @@ pub fn update_attacks(
                 let low = half * 0.6;
                 let bottom = |p: Vec2| p - Vec2::Y * low;
                 // The weight's underside sweeps across barriers.
+                // (Only on the way down: a bouncing sumo rises through lines.)
                 let hit = (0..=6)
                     .map(|i| -half + a.size * i as f32 / 6.0)
+                    .filter(|_| a.vel.y < 0.0)
                     .find_map(|dx| sweep_hit(&barriers, target, bottom(prev) + Vec2::X * dx, bottom(next) + Vec2::X * dx, 0.1));
                 a.pos = next;
                 if let Some((_, _, be)) = hit {
@@ -613,10 +705,10 @@ pub fn update_attacks(
                         sfx.play("SFX_CHICK_DESTROY_LINE");
                     }
                 }
-                if a.state == AttackState::Travel && a.pos.y <= low {
+                if a.state == AttackState::Travel && a.pos.y <= low && a.vel.y <= 0.0 {
                     a.pos.y = low;
                     let dmg = tuning.weight_damage.damage(a.quality);
-                    sfx.play(WEIGHT_SOUNDS[a.variant.clamp(1, 6) - 1]);
+                    sfx.play(if a.variant == 7 { "SFX_ATTACKS_WEIGHT_SUMO" } else { WEIGHT_SOUNDS[a.variant.clamp(1, 6) - 1] });
                     let mut hits = 0;
                     for (_, mut c) in chicks.iter_mut() {
                         if c.team == target && c.alive() && (c.pos.x - a.pos.x).abs() < half + c.radius * 0.5 {
@@ -627,8 +719,29 @@ pub fn update_attacks(
                             hits += 1;
                         }
                     }
-                    a.state = AttackState::Impact;
-                    a.t = 0.0;
+                    if a.variant == 7 && a.hits == 0 {
+                        // The sumo bounces and comes down again on the nearest chick.
+                        a.hits = 1;
+                        let here = a.pos.x;
+                        let aim = chicks
+                            .iter()
+                            .filter(|(_, c)| c.team == target && c.alive())
+                            .map(|(_, c)| c.pos.x)
+                            .min_by(|p, q| (p - here).abs().total_cmp(&(q - here).abs()))
+                            .unwrap_or(here);
+                        let (lo, hi) = tuning.side_range(target);
+                        let border = tuning.weight_border_offset.min((hi - lo) / 2.0);
+                        let tx = aim.clamp(lo + border, hi - border);
+                        let up = SUMO_BOUNCE;
+                        a.vel = Vec2::new((tx - a.pos.x) / (2.0 * up / WEIGHT_GRAVITY), up);
+                        a.target_x = tx;
+                        if let Some(v) = a.visual {
+                            assets.play(&mut commands, v, "weight__weightSumoJump");
+                        }
+                    } else {
+                        a.state = AttackState::Impact;
+                        a.t = 0.0;
+                    }
                 }
                 let k = (1.0 - (a.pos.y / WEIGHT_START_Y)).clamp(0.0, 1.0);
                 set_transform(&mut commands, a.aux, shadow_transform(a.pos.x, z, a.size * (0.6 + 0.4 * k)));
@@ -723,10 +836,17 @@ pub fn update_attacks(
                     a.cooldown = tuning.plant_start_bite_cooldown;
                     sfx.play("SFX_ATTACKS_PLANT_APPEAR");
                     // The flytrap head rides the vine's tip; the leaves stay at the root.
-                    let head = assets.spawn_bones(&mut commands, "plant", a.from, 1.0, Some(&["head", "plantInnerMouth"]), &mut meshes, &mut materials, &mut images);
+                    // Scorpion Fern (green) and Fire Flower (red) have their own heads.
+                    a.model = match a.upgrade {
+                        1 => "plantA",
+                        2 => "plantB",
+                        _ => "plant",
+                    };
+                    let bones: &[&str] = if a.model == "plant" { &["head", "plantInnerMouth"] } else { &["head"] };
+                    let head = assets.spawn_bones(&mut commands, a.model, a.from, 1.0, Some(bones), &mut meshes, &mut materials, &mut images);
                     a.visual = Some(head);
                     let leaves = assets.spawn_bones(&mut commands, "plant", a.from, 1.0, Some(&["leaves"]), &mut meshes, &mut materials, &mut images);
-                    commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets))));
+                    commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets, "plant"))));
                     a.flash = Some(leaves);
                     // The vine: a dark outline under a lighter green fill.
                     a.effect = Some(assets.spawn_stem(&mut commands, z + 0.70, Vec4::new(0.08, 0.25, 0.04, 1.0), &mut materials));
@@ -740,7 +860,7 @@ pub fn update_attacks(
                 draw_vine(&mut commands, &mut meshes, &mut a, 1.0);
                 // The head sits on the vine's tip, leaning along it; a bite lunges it forward.
                 let d = a.vel;
-                let s = plant_scale(&assets);
+                let s = plant_scale(&assets, a.model);
                 let lunge = a.bite.map_or(0.0, |b| (b / tuning.plant_bite_time * std::f32::consts::FRAC_PI_2).sin().max(0.0) * 0.5);
                 let tip = a.pos + d * lunge;
                 // Upright (the mouth stays level), leaning a little along the vine and turned
@@ -761,11 +881,11 @@ pub fn update_attacks(
                 a.path.truncate(keep.max(2));
                 draw_vine(&mut commands, &mut meshes, &mut a, 1.0 - k * 0.5);
                 let head = *a.path.last().unwrap_or(&a.pos);
-                let s = plant_scale(&assets) * (1.0 - k).max(0.01);
+                let s = plant_scale(&assets, a.model) * (1.0 - k).max(0.01);
                 let droop = Quat::from_rotation_z(k * 1.3 * -a.vel.x.signum());
                 set_transform(&mut commands, a.visual, Transform::from_xyz(head.x, head.y - k * 0.4, z + 0.35).with_rotation(droop).with_scale(Vec3::splat(s)));
                 if let Some(l) = a.flash {
-                    commands.entity(l).insert(Transform::from_xyz(a.path[0].x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets) * (1.0 - k).max(0.01))));
+                    commands.entity(l).insert(Transform::from_xyz(a.path[0].x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets, "plant") * (1.0 - k).max(0.01))));
                 }
                 if a.t >= tuning.plant_rot_time {
                     a.state = AttackState::Finished;
@@ -1046,8 +1166,8 @@ pub fn update_attacks(
             // ---------------------------------------------------------------- common
             (_, AttackState::Impact) => {
                 if let Some(fx) = a.effect {
-                    let (rmin, rmax) = tuning.bomb_exp_radius;
-                    let radius = rmin + (rmax - rmin) * a.quality;
+                    // A bomb keeps its blast radius in `size`.
+                    let radius = a.size;
                     let grow = (a.t / 0.4).min(1.0);
                     set_transform(&mut commands, Some(fx), Transform::from_xyz(a.pos.x, a.pos.y, z + 0.5).with_scale(Vec3::splat(assets.scale("explosion", radius * 2.0) * (0.3 + 0.7 * grow) * (1.0 - (a.t - 0.5).max(0.0) * 2.0).max(0.01))));
                 }

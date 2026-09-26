@@ -59,8 +59,8 @@ pub struct Match {
     pub available: Vec<AttackKind>,
     /// The player's selected attack while tracing its gesture.
     pub selected: Option<AttackKind>,
-    /// An attack ready to launch (kind, quality), from the player or the CPU.
-    pub pending: Option<(AttackKind, f32)>,
+    /// An attack ready to launch (kind, quality, upgrade 0/1 green/2 red), from the player or the CPU.
+    pub pending: Option<(AttackKind, f32, u8)>,
     pub attack: Option<Entity>,
     /// Team health when full (sum of the chicks' max health).
     pub max_health: [f32; 2],
@@ -283,7 +283,7 @@ impl GameAssets {
         images: &mut Assets<Image>,
     ) -> Entity {
         let e = self.spawn(commands, "weight", team, width, meshes, materials, images);
-        let name = format!("weight__weightDefault0{}", variant.clamp(1, 6));
+        let name = if variant == 7 { "weight__weightSumo".to_string() } else { format!("weight__weightDefault0{}", variant.clamp(1, 6)) };
         if let Some(c) = self.clips.iter().find(|c| c.name == name) {
             commands.entity(e).insert(BoneAnimator::new(vec![c.clone()]));
         }
@@ -388,7 +388,7 @@ pub fn start_match(
         let textures = g3d::load_textures(&[&common, &theme], &mut images);
         let clips = crate::anim::load_clips(&common)?;
         let mut models = HashMap::new();
-        for name in ["bomb", "weight", "explosion", "cloud", "cloudLightning", "plant", "plantCircle"] {
+        for name in ["bomb", "bombA", "bombB", "weight", "explosion", "cloud", "cloudLightning", "plant", "plantA", "plantB", "plantCircle", "glue", "acid"] {
             if let Ok(m) = common.model(name) {
                 models.insert(name.to_string(), m);
             }
@@ -448,8 +448,12 @@ pub fn start_match(
             round_winner: None,
         });
         let skins = models.iter().filter_map(|(n, m)| g3d::inverse_binds(m, &mut skin_store).map(|h| (n.clone(), h))).collect();
-        let weight_visible = (1..=6)
-            .map(|v| models.get("weight").and_then(|m| card_visible_width(m, &format!("weight0{v}"), &textures, &images)).unwrap_or(1.5))
+        // Variant 7 is the sumo chick (the red weight upgrade).
+        let weight_visible = (1..=7)
+            .map(|v| {
+                let bone = if v == 7 { "weightSumo".to_string() } else { format!("weight0{v}") };
+                models.get("weight").and_then(|m| card_visible_width(m, &bone, &textures, &images)).unwrap_or(1.5)
+            })
             .collect::<Vec<_>>();
         debug!("weight visible widths {weight_visible:?}");
         commands.insert_resource(GameAssets { chick: chick_assets, models, skins, widths, textures, clips, root, weight_visible });
@@ -600,7 +604,7 @@ pub fn run_match(
             if before.ceil() != m.turn_timer.ceil() && m.turn_timer > 0.0 && m.turn_timer <= 5.0 {
                 sfx.play("SFX_ATTACK_IFC_CLOCK_TICK");
             }
-            if let Some((kind, quality)) = m.pending.take() {
+            if let Some((kind, quality, upgrade)) = m.pending.take() {
                 // Aim at a living chick; a weaker trace aims worse.
                 let target = m.attacker.other();
                 let xs: Vec<f32> = chicks.iter().filter(|c| c.team == target && c.alive()).map(|c| c.pos.x).collect();
@@ -608,7 +612,7 @@ pub fn run_match(
                 let aim = rng.pick(&xs).unwrap_or((lo + hi) / 2.0);
                 let err = (1.0 - quality) * 2.5 * (rng.f32() * 2.0 - 1.0);
                 let tx = (aim + err).clamp(lo, hi);
-                let e = commands.spawn((Attack::new(kind, m.attacker, quality, tx), DespawnOnExit(Screen::Level))).id();
+                let e = commands.spawn((Attack::new(kind, m.attacker, quality, tx).upgraded(upgrade), DespawnOnExit(Screen::Level))).id();
                 m.attack = Some(e);
                 m.phase = Phase::Incoming;
                 sfx.play("SFX_ATTACK_IFC_LAUNCH");
@@ -619,7 +623,8 @@ pub fn run_match(
             }
         }
         Phase::Incoming => {
-            if m.attack.is_none_or(|e| attacks.get(e).is_err()) {
+            // Done once the attack and its offspring (cluster bombs) are gone.
+            if m.attack.is_none_or(|e| attacks.get(e).is_err()) && !attacks.iter().any(|a| a.child) {
                 m.attack = None;
                 m.phase = Phase::Finish(0.0);
             }

@@ -114,13 +114,16 @@ pub fn chick_fx(
             continue;
         }
         c.scared = danger.iter().any(|(t, p)| *t == c.team && (p.x - c.pos.x).abs() < FEAR_RANGE);
+        // A confused chick is drawn to the nearest danger on its side.
+        let here = c.pos.x;
+        c.lure = danger.iter().filter(|(t, _)| *t == c.team).map(|(_, p)| p.x).min_by(|a, b| (a - here).abs().total_cmp(&(b - here).abs()));
         // The face for its state; a normal chick blinks now and then.
         c.blink -= dt;
-        let want = if c.held || c.scared && c.flash <= 0.0 && c.health >= c.max_health * LOW_HP {
+        let want = if c.held || c.glued > 0.0 || c.confused > 0.0 || c.scared && c.flash <= 0.0 && c.health >= c.max_health * LOW_HP {
             "chick__ufo"
         } else if c.flash > 0.0 {
             "chick__flashhit"
-        } else if c.health < c.max_health * LOW_HP {
+        } else if c.health < c.max_health * LOW_HP || c.sick > 0.0 {
             "chick__low"
         } else {
             "normal"

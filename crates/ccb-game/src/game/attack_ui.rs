@@ -34,14 +34,48 @@ pub enum Mode {
     Idle,
     /// Tracing a gesture: dots done, quality so far.
     Tracing { kind: AttackKind, done: usize, quality: f32 },
-    /// Traced; waiting for the trigger.
-    Armed { kind: AttackKind, quality: f32 },
+    /// Traced; waiting for the trigger. `upgrade`: 0 none, 1 green, 2 red.
+    Armed { kind: AttackKind, quality: f32, upgrade: u8 },
+}
+
+/// The upgrade target on a blueprint panel (yellow side's frame; mirrored for black).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Target {
+    pub pos: Vec2,
+    pub scale: f32,
+    /// `aim2`: with the red bullseye (trace good enough for the red upgrade).
+    pub red: bool,
+}
+
+/// Where the upgrade target is `t` seconds after a good trace: it flies in from behind
+/// (`upgradeTargetInitialPos` z -70, `upgradeTargetZScaleFac`) and weaves around the
+/// platform, faster when it carries the red bullseye.
+pub fn upgrade_target(t: f32, red: bool, appear: f32) -> Target {
+    let k = (t / appear.max(0.01)).min(1.0);
+    let z = -70.0 * (1.0 - k);
+    let w = std::f32::consts::TAU / if red { 1.7 } else { 2.3 };
+    let pos = Vec2::new(50.0 * (w * t).sin(), 6.0 + 26.0 * (2.0 * w * t).sin());
+    Target { pos: pos * k, scale: (1.0 + z * 0.005).max(0.05), red }
+}
+
+/// Which upgrade a click at `p` (panel frame) picks: 2 on the red bullseye, 1 on the rest.
+pub fn target_hit(t: &Target, p: Vec2, up: &super::tuning::UpgradeTuning) -> u8 {
+    let d = p.distance(t.pos) / t.scale.max(0.05);
+    if t.red && d <= up.red_r {
+        2
+    } else if d <= up.hit_r {
+        1
+    } else {
+        0
+    }
 }
 
 /// Per-team interface state, written by the player's input and the CPU.
 #[derive(Resource, Default)]
 pub struct IfcView {
     pub mode: [Mode; 2],
+    /// The upgrade target on each side's panel while it's up.
+    pub target: [Option<Target>; 2],
     /// Which team the player controls (None when the CPU plays both).
     pub player: Option<Team>,
 }
@@ -293,9 +327,9 @@ pub fn update_blueprints(
         });
         show(root, &mut panes, "slotSpecTimer", false);
         // Traced: the attack on its platform, with the fire button.
-        let armed = match mode {
-            Mode::Armed { kind, .. } => Some(kind),
-            _ => None,
+        let (armed, upgrade) = match mode {
+            Mode::Armed { kind, upgrade, .. } => (Some(kind), upgrade),
+            _ => (None, 0),
         };
         with_pane(root, &mut panes, "upgradePanel", |p| {
             p.cur.visible = armed.is_some();
@@ -305,14 +339,25 @@ pub fn update_blueprints(
             p.cur.translate = Vec3::new(CONFIRM_POS.x * mirror, CONFIRM_POS.y, p.base.translate.z);
             p.cur.scale = Vec2::splat(1.0 + 0.06 * (clock * 6.0).sin());
         });
-        for name in ["upgradeTarget0Bg", "upgradeTarget1Bg", "upgradeTarget0", "upgradeTarget1", "confirmHintArrow"] {
+        for name in ["upgradeTarget0Bg", "upgradeTarget1Bg", "confirmHintArrow"] {
             show(root, &mut panes, name, false);
+        }
+        // The upgrade target: green `aim1`, or `aim2` with the red bullseye.
+        let target = view.target[t].filter(|_| armed.is_some());
+        for (i, name) in ["upgradeTarget0", "upgradeTarget1"].into_iter().enumerate() {
+            with_pane(root, &mut panes, name, |p| {
+                p.cur.visible = target.is_some_and(|g| g.red == (i == 1));
+                if let Some(g) = target {
+                    p.cur.translate = Vec3::new(g.pos.x * mirror, g.pos.y, p.base.translate.z + 5.0);
+                    p.cur.scale = Vec2::splat(g.scale);
+                }
+            });
         }
         // The attack's big graphic on the platform (`attackIcon<id><variant>`; variants 1/2
         // are the upgrades).
         for id in 0..7u8 {
             for v in 0..3 {
-                let on = armed.is_some_and(|k| attack_id(k) == id) && v == 0;
+                let on = armed.is_some_and(|k| attack_id(k) == id) && v == upgrade;
                 with_pane(root, &mut panes, &format!("attackIcon{id}{v}"), |p| {
                     p.cur.visible = on;
                     p.cur.scale = p.base.scale * Vec2::new(mirror, 1.0);

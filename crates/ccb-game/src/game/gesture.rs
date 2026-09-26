@@ -55,6 +55,11 @@ pub struct Trace {
     started: bool,
     /// Traced and waiting for the trigger: quality.
     armed: Option<f32>,
+    /// When it was traced (on `clock`), the upgrade hit on the target, and whether the
+    /// target was announced.
+    armed_at: f32,
+    upgrade: u8,
+    offered: bool,
 }
 
 pub fn trace_quality(times: &[f32], dots: usize, timing: [f32; 5]) -> f32 {
@@ -107,17 +112,39 @@ pub fn player_gesture(
     };
     let fire_btn = panel + CONFIRM_POS * Vec2::new(mirror, 1.0);
     if let Some(q) = trace.armed {
-        view.mode[team.index()] = Mode::Armed { kind, quality: q };
-        let clicked = pointer.just_pressed && pointer.pos.is_some_and(|p| p.distance(fire_btn) < 36.0);
+        let ti = team.index();
+        trace.clock += time.delta_secs();
+        // A good trace offers the upgrade target: click its green ring or red bullseye.
+        let offer = kind.is_basic() && q >= tuning.up.a_min && trace.upgrade == 0;
+        let target = offer.then(|| super::attack_ui::upgrade_target(trace.clock - trace.armed_at, q >= tuning.up.b_min, tuning.up.target_appear));
+        if offer && !trace.offered {
+            trace.offered = true;
+            sfx.play("SFX_ATTACK_IFC_UPGRADE_TARGET_00");
+        }
+        view.target[ti] = target;
+        let mut picked = false;
+        if let (Some(g), true, Some(p)) = (target, pointer.just_pressed, pointer.pos) {
+            let hit = super::attack_ui::target_hit(&g, (p - panel) * Vec2::new(mirror, 1.0), &tuning.up);
+            if hit > 0 {
+                info!("upgrade {hit} for {kind:?}");
+                trace.upgrade = hit;
+                picked = true;
+                sfx.play(if hit == 2 { "SFX_ATTACK_IFC_UPGRADE_TARGET_02" } else { "SFX_ATTACK_IFC_UPGRADE_TARGET_01" });
+                view.target[ti] = None;
+            }
+        }
+        view.mode[ti] = Mode::Armed { kind, quality: q, upgrade: trace.upgrade };
+        let clicked = !picked && pointer.just_pressed && pointer.pos.is_some_and(|p| p.distance(fire_btn) < 36.0);
         // Out of turn time: the traced attack goes off by itself.
         let timeout = kind.is_basic() && m.phase == super::flow::Phase::Attack && m.turn_timer < 0.2;
         if buttons.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::Space) || clicked || timeout {
             if kind.is_basic() {
-                m.pending = Some((kind, q));
+                m.pending = Some((kind, q, trace.upgrade));
             } else {
                 m.pending_special = Some((team, kind, q));
             }
             m.selected = None;
+            view.target[ti] = None;
         }
         return;
     }
@@ -155,7 +182,8 @@ pub fn player_gesture(
             "SFX_ATTACK_IFC_DRAWING_SUCCESS"
         });
         trace.armed = Some(q);
-        view.mode[team.index()] = Mode::Armed { kind, quality: q };
+        trace.armed_at = trace.clock;
+        view.mode[team.index()] = Mode::Armed { kind, quality: q, upgrade: 0 };
     }
 }
 

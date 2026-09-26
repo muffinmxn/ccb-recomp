@@ -58,6 +58,13 @@ pub struct Chick {
     /// Current face clip and seconds to the next blink.
     pub face: &'static str,
     pub blink: f32,
+    /// Upgrade effects, seconds left: stuck in glue, poisoned (hops slower, takes
+    /// `sick_extra` more damage), confused (hops towards danger, at `lure`).
+    pub glued: f32,
+    pub sick: f32,
+    pub sick_extra: f32,
+    pub confused: f32,
+    pub lure: Option<f32>,
 }
 
 impl Chick {
@@ -69,6 +76,7 @@ impl Chick {
         if !self.alive() {
             return;
         }
+        let amount = if self.sick > 0.0 { amount * (1.0 + self.sick_extra) } else { amount };
         self.health -= amount;
         self.flash = 0.6;
         self.hurt = true;
@@ -165,6 +173,11 @@ pub fn spawn_chick(
             scared: false,
             face: "",
             blink: 1.0,
+            glued: 0.0,
+            sick: 0.0,
+            sick_extra: 0.0,
+            confused: 0.0,
+            lure: None,
             pos: Vec2::new(x, y),
             vel: Vec2::ZERO,
             on_ground: false,
@@ -225,6 +238,9 @@ pub fn move_chicks(
         }
         c.flash = (c.flash - dt).max(0.0);
         c.squashed = (c.squashed - dt).max(0.0);
+        c.glued = (c.glued - dt).max(0.0);
+        c.sick = (c.sick - dt).max(0.0);
+        c.confused = (c.confused - dt).max(0.0);
         if c.held {
             c.vel = Vec2::ZERO;
             c.jump = None;
@@ -249,13 +265,18 @@ pub fn move_chicks(
             if let Some(j) = c.jump {
                 let j = j + h;
                 if j >= jc.delay {
-                    c.vel = Vec2::new(jc.vel.x * c.dir, jc.vel.y) * JUMP_SCALE;
+                    // Poisoned chicks hop slower (`chickSickFac`).
+                    let slow = if c.sick > 0.0 { tuning.up.sick_fac } else { 1.0 };
+                    c.vel = Vec2::new(jc.vel.x * c.dir * slow, jc.vel.y) * JUMP_SCALE;
                     c.jump = None;
                 } else {
                     c.jump = Some(j);
                 }
             }
             c.vel.x *= damp;
+            if c.glued > 0.0 {
+                c.vel.x = 0.0;
+            }
             c.vel.y += tuning.gravity * h;
             let v = c.vel;
             c.pos += v * h;
@@ -299,13 +320,19 @@ pub fn move_chicks(
                 }
             }
             c.on_ground = landed;
-            if landed && c.jump.is_none() && c.squashed <= 0.0 && c.start_force.is_none() {
+            if landed && c.jump.is_none() && c.squashed <= 0.0 && c.start_force.is_none() && c.glued <= 0.0 {
                 // Landed: squash, then jump again (maybe the other way).
                 c.squash_anim = 1.0;
                 c.same_dir += 1;
                 if rng.chance(jc.turn_chance(c.same_dir)) {
                     c.dir = -c.dir;
                     c.same_dir = 0;
+                }
+                // Confused: hops towards the danger.
+                if let Some(x) = c.lure.filter(|_| c.confused > 0.0) {
+                    if (x - c.pos.x).abs() > 0.3 {
+                        c.dir = (x - c.pos.x).signum();
+                    }
                 }
                 c.jump = Some(0.0);
             }

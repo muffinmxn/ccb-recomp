@@ -21,6 +21,7 @@ pub mod fx;
 pub mod gesture;
 pub mod rng;
 pub mod tuning;
+pub mod upgrade;
 
 use bevy::prelude::*;
 
@@ -138,6 +139,7 @@ impl Plugin for GamePlugin {
                     fx::chick_fx,
                     fx::update_souls,
                     attack::update_attacks,
+                    upgrade::update_hazards,
                     flow::update_hud,
                 )
                     .chain()
