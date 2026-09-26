@@ -12,12 +12,39 @@ pub struct ScreenshotPlugin;
 
 impl Plugin for ScreenshotPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, take_screenshot);
+        app.init_resource::<ShotTrigger>().add_systems(Update, take_screenshot);
     }
 }
 
-fn take_screenshot(mut commands: Commands, opts: Res<Options>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
+/// Set by gameplay when `CCB_SHOT_ON=<kind>:<state>[:frames]` matches an attack event:
+/// the screenshot is taken that many frames later instead of at `CCB_SHOT_FRAME`.
+#[derive(Resource, Default)]
+pub struct ShotTrigger(pub Option<u32>);
+
+fn take_screenshot(mut commands: Commands, opts: Res<Options>, mut trigger: ResMut<ShotTrigger>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     *frame += 1;
+    if let Some(n) = trigger.0 {
+        if n == 0 {
+            if let Some(path) = opts.screenshot.clone() {
+                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+            }
+            trigger.0 = Some(u32::MAX);
+            *frame = u32::MAX - 20;
+        } else if n != u32::MAX {
+            trigger.0 = Some(n - 1);
+        }
+        if *frame >= u32::MAX - 10 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    if std::env::var("CCB_SHOT_ON").is_ok() {
+        // Waiting for the gameplay event; give up after a long while.
+        if *frame > 60 * 120 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
     // CCB_SHOT_FRAME=N or a list "N1,N2,..." (extra shots get a `.N` suffix).
     let frames: Vec<u32> = std::env::var("CCB_SHOT_FRAME")
         .ok()

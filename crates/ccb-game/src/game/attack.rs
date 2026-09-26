@@ -16,12 +16,16 @@ use crate::gx_material::GxMaterial;
 /// Bomb flight: the original's bomb lanes start at ~15 up and lose `bombDampFac` per 180 Hz step.
 const BOMB_START_VY: f32 = 15.0;
 const BOMB_DAMP: f32 = 0.02;
+/// Model width per unit of bomb size (the model includes the fuse).
+const BOMB_LOOK: f32 = 2.8;
 const WEIGHT_GRAVITY: f32 = 30.0;
 const WEIGHT_START_Y: f32 = 16.0;
 const STRIKE_RADIUS: f32 = 1.3;
-/// Plant model size and stem thickness.
-const PLANT_SIZE: f32 = 1.5;
-const STEM_WIDTH: f32 = 0.22;
+/// Plant head size (`plantHeadSize`) and vine thickness.
+const PLANT_HEAD: f32 = 1.0;
+const STEM_WIDTH: f32 = 0.16;
+const STEM_OUTLINE: f32 = 0.28;
+const PLANT_LIFETIME: f32 = 10.0;
 const UFO_Y: f32 = 6.2;
 const UFO_BEAM_TIME: f32 = 1.4;
 const TENTACLE_Y: f32 = 1.1;
@@ -76,7 +80,6 @@ pub struct Attack {
     high: f32,
     /// A second entity: the weight's shadow, the plant's stem.
     aux: Option<Entity>,
-    aux_mesh: Option<Handle<Mesh>>,
     /// Blown up early (lightning, touched while drawing): quality to explode with.
     pub detonate: Option<f32>,
 }
@@ -107,7 +110,6 @@ impl Attack {
             bite: None,
             high: 0.0,
             aux: None,
-            aux_mesh: None,
             detonate: None,
         }
     }
@@ -165,6 +167,33 @@ fn damage_chicks(chicks: &mut Query<(Entity, &mut Chick)>, sfx: &mut crate::sfx:
         hits += 1;
     }
     hits
+}
+
+/// Model scale for a weight variant `size` wide.
+fn weight_scale(assets: &GameAssets, variant: usize, size: f32) -> f32 {
+    size / assets.weight_visible.get(variant.clamp(1, 6) - 1).copied().unwrap_or(1.5)
+}
+
+/// A falling weight's shadow: a flat ellipse on the ground, `width` wide.
+fn shadow_transform(x: f32, z: f32, width: f32) -> Transform {
+    Transform::from_xyz(x, 0.03, z).with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)).with_scale(Vec3::new(width, 1.2, 1.0))
+}
+
+/// Model scale that makes the flytrap head `plantHeadSize` wide.
+fn plant_scale(assets: &GameAssets) -> f32 {
+    PLANT_HEAD / assets.bone_width("plant", "head").max(1e-3)
+}
+
+/// Rebuilds the vine's ribbons along the plant's path.
+fn draw_vine(commands: &mut Commands, meshes: &mut Assets<Mesh>, a: &Attack, width: f32) {
+    if a.path.len() < 2 {
+        return;
+    }
+    for (e, w) in [(a.effect, STEM_OUTLINE), (a.aux, STEM_WIDTH)] {
+        if let Some(e) = e {
+            commands.entity(e).insert(Mesh3d(meshes.add(super::barrier::ribbon(&a.path, w * width))));
+        }
+    }
 }
 
 /// Horizontal throw speed that lands a bomb (damped arc, `BOMB_START_VY` up) at `target_x`.
@@ -331,7 +360,8 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
     if a.pos.y > tuning.plant_grow_y_threshold {
         a.high += dt;
     }
-    a.starving > a.starve_limit || a.high > tuning.plant_threshold_living
+    // `plantEffectiveTimer` (10 s) caps its life.
+    a.starving > a.starve_limit || a.high > tuning.plant_threshold_living || a.t > PLANT_LIFETIME
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -348,6 +378,7 @@ pub fn update_attacks(
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut sfx: ResMut<crate::sfx::Sfx>,
+    mut shot: Option<ResMut<crate::shot::ShotTrigger>>,
 ) {
     let dt = time.delta_secs();
     let z = tuning.plane_z;
@@ -366,7 +397,7 @@ pub fn update_attacks(
                     a.pos = start;
                     a.vel = Vec2::new(bomb_throw_vx(start, a.target_x, a.size, tuning.gravity), BOMB_START_VY);
                     sfx.play("SFX_ATTACKS_BOMB_FLY");
-                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, a.size * 2.0, &mut meshes, &mut materials, &mut images));
+                    a.visual = Some(assets.spawn_posed(&mut commands, "bomb", "bomb__fly", a.from, a.size * BOMB_LOOK, &mut meshes, &mut materials, &mut images));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
@@ -442,7 +473,7 @@ pub fn update_attacks(
                 }
                 let spin = -a.pos.x / r;
                 let pulse = if rolling { 1.0 + 0.12 * (a.t * 18.0).sin() } else { 1.0 };
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale("bomb", r * 2.0) * pulse)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(spin)).with_scale(Vec3::splat(assets.scale("bomb", r * BOMB_LOOK) * pulse)));
                 if a.state != AttackState::Finished && ((rolling && a.t >= tuning.bomb_roll_time) || a.detonate.is_some()) {
                     let q = a.detonate.take().unwrap_or(a.quality).max(a.quality);
                     let (rmin, rmax) = tuning.bomb_exp_radius;
@@ -475,7 +506,7 @@ pub fn update_attacks(
                     a.aux = Some(assets.spawn_shadow(&mut commands, z, &mut meshes, &mut materials));
                 }
                 let k = (a.t / (tuning.attack_prepare_time * 0.6)).min(1.0);
-                set_transform(&mut commands, a.aux, Transform::from_xyz(a.target_x, 0.03, z).with_scale(Vec3::new(a.size * (0.3 + 0.3 * k), 1.0, 1.4)));
+                set_transform(&mut commands, a.aux, shadow_transform(a.target_x, z, a.size * (0.3 + 0.3 * k)));
                 if a.t >= tuning.attack_prepare_time * 0.6 {
                     a.vel = Vec2::new(0.0, -2.0);
                     a.visual = Some(assets.spawn_weight(&mut commands, a.variant, a.from, a.size, &mut meshes, &mut materials, &mut images));
@@ -539,8 +570,8 @@ pub fn update_attacks(
                     a.t = 0.0;
                 }
                 let k = (1.0 - (a.pos.y / WEIGHT_START_Y)).clamp(0.0, 1.0);
-                set_transform(&mut commands, a.aux, Transform::from_xyz(a.pos.x, 0.03, z).with_scale(Vec3::new(a.size * (0.6 + 0.4 * k), 1.0, 1.4)));
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", a.size))));
+                set_transform(&mut commands, a.aux, shadow_transform(a.pos.x, z, a.size * (0.6 + 0.4 * k)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(weight_scale(&assets, a.variant, a.size))));
             }
             (AttackKind::Weight, AttackState::Blocked) => {
                 a.vel.y -= WEIGHT_GRAVITY * 0.5 * dt;
@@ -550,7 +581,7 @@ pub fn update_attacks(
                 if let Some(e) = a.aux.take() {
                     commands.entity(e).despawn();
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(a.t * 2.0)).with_scale(Vec3::splat(assets.scale("weight", a.size) * fade)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_z(a.t * 2.0)).with_scale(Vec3::splat(weight_scale(&assets, a.variant, a.size) * fade)));
                 if a.t >= 1.0 {
                     a.state = AttackState::Finished;
                 }
@@ -615,37 +646,30 @@ pub fn update_attacks(
                     a.cooldown = tuning.plant_start_bite_cooldown;
                     sfx.play("SFX_ATTACKS_PLANT_APPEAR");
                     // The flytrap head rides the vine's tip; the leaves stay at the root.
-                    let head = assets.spawn_bones(&mut commands, "plant", a.from, PLANT_SIZE, Some(&["head", "plantInnerMouth"]), &mut meshes, &mut materials, &mut images);
-                    assets.play(&mut commands, head, "plant__intro");
+                    let head = assets.spawn_bones(&mut commands, "plant", a.from, 1.0, Some(&["head", "plantInnerMouth"]), &mut meshes, &mut materials, &mut images);
                     a.visual = Some(head);
-                    let leaves = assets.spawn_bones(&mut commands, "plant", a.from, PLANT_SIZE, Some(&["leaves"]), &mut meshes, &mut materials, &mut images);
-                    commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z - 0.05).with_scale(Vec3::splat(assets.scale("plant", PLANT_SIZE))));
+                    let leaves = assets.spawn_bones(&mut commands, "plant", a.from, 1.0, Some(&["leaves"]), &mut meshes, &mut materials, &mut images);
+                    commands.entity(leaves).insert(Transform::from_xyz(a.pos.x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets))));
                     a.flash = Some(leaves);
-                    let (stem, mesh) = assets.spawn_stem(&mut commands, z - 0.2, &mut meshes, &mut materials);
-                    a.aux = Some(stem);
-                    a.aux_mesh = Some(mesh);
+                    // The vine: a dark outline under a lighter green fill.
+                    a.effect = Some(assets.spawn_stem(&mut commands, z + 0.25, Vec4::new(0.08, 0.25, 0.04, 1.0), &mut materials));
+                    a.aux = Some(assets.spawn_stem(&mut commands, z + 0.26, Vec4::new(0.42, 0.72, 0.16, 1.0), &mut materials));
                     a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
             }
             (AttackKind::Plant, AttackState::Travel) => {
-                let was_biting = a.bite.is_some();
                 let died = grow_plant(&mut a, &tuning, &barriers, &mut chicks, &mut sfx, dt);
-                if a.bite.is_some() && !was_biting {
-                    if let Some(v) = a.visual {
-                        assets.play(&mut commands, v, "plant__bite");
-                    }
-                }
-                if let Some(mut mesh) = a.aux_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
-                    *mesh = super::barrier::ribbon(&a.path, STEM_WIDTH);
-                }
-                // The head faces along the vine, its mouth towards the prey.
+                draw_vine(&mut commands, &mut meshes, &a, 1.0);
+                // The head sits on the vine's tip, leaning along it; a bite lunges it forward.
                 let d = a.vel;
-                let s = assets.scale("plant", PLANT_SIZE);
-                let rot = Quat::from_rotation_z(f32::atan2(-d.x, d.y) * 0.5);
-                let off = rot * (assets.bone_center("plant", "head") * s).extend(0.0);
+                let s = plant_scale(&assets);
+                let lunge = a.bite.map_or(0.0, |b| (b / tuning.plant_bite_time * std::f32::consts::FRAC_PI_2).sin().max(0.0) * 0.5);
+                let tip = a.pos + d * lunge;
+                let rot = Quat::from_rotation_z(f32::atan2(-d.x, d.y) * 0.6);
                 let flip = if d.x < 0.0 { -1.0 } else { 1.0 };
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x - off.x * flip, a.pos.y - off.y, z - 0.1).with_rotation(rot).with_scale(Vec3::new(s * flip, s, s)));
+                let snap = 1.0 + lunge * 0.3;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(tip.x, tip.y - 0.15 * s, z + 0.35).with_rotation(rot).with_scale(Vec3::new(s * flip * snap, s * snap, s)));
                 if died {
                     sfx.play("SFX_ATTACKS_PLANT_ROTT");
                     a.state = AttackState::Blocked;
@@ -657,15 +681,13 @@ pub fn update_attacks(
                 let k = (a.t / tuning.plant_rot_time).min(1.0);
                 let keep = ((1.0 - k) * a.path.len() as f32).ceil() as usize;
                 a.path.truncate(keep.max(2));
-                if let Some(mut mesh) = a.aux_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
-                    *mesh = super::barrier::ribbon(&a.path, STEM_WIDTH * (1.0 - k * 0.5));
-                }
+                draw_vine(&mut commands, &mut meshes, &a, 1.0 - k * 0.5);
                 let head = *a.path.last().unwrap_or(&a.pos);
-                let s = assets.scale("plant", PLANT_SIZE) * (1.0 - k).max(0.01);
-                let off = assets.bone_center("plant", "head") * s;
-                set_transform(&mut commands, a.visual, Transform::from_xyz(head.x - off.x, head.y - off.y - k * 0.5, z - 0.1).with_scale(Vec3::splat(s)));
+                let s = plant_scale(&assets) * (1.0 - k).max(0.01);
+                let droop = Quat::from_rotation_z(k * 1.3 * -a.vel.x.signum());
+                set_transform(&mut commands, a.visual, Transform::from_xyz(head.x, head.y - k * 0.4, z + 0.35).with_rotation(droop).with_scale(Vec3::splat(s)));
                 if let Some(l) = a.flash {
-                    commands.entity(l).insert(Transform::from_xyz(a.path[0].x, 0.0, z - 0.05).with_scale(Vec3::splat(assets.scale("plant", PLANT_SIZE) * (1.0 - k).max(0.01))));
+                    commands.entity(l).insert(Transform::from_xyz(a.path[0].x, 0.0, z + 0.1).with_scale(Vec3::splat(plant_scale(&assets) * (1.0 - k).max(0.01))));
                 }
                 if a.t >= tuning.plant_rot_time {
                     a.state = AttackState::Finished;
@@ -851,8 +873,8 @@ pub fn update_attacks(
                 }
                 if a.kind == AttackKind::Weight {
                     let fade = (1.0 - (a.t - 1.0).max(0.0) * 2.0).max(0.01);
-                    set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(assets.scale("weight", a.size) * fade)));
-                    set_transform(&mut commands, a.aux, Transform::from_xyz(a.pos.x, 0.02, z).with_scale(Vec3::new(a.size * fade, 1.0, 1.2)));
+                    set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_scale(Vec3::splat(weight_scale(&assets, a.variant, a.size) * fade)));
+                    set_transform(&mut commands, a.aux, shadow_transform(a.pos.x, z, a.size * fade));
                 }
                 if a.t >= 1.5 {
                     a.state = AttackState::Finished;
@@ -868,6 +890,15 @@ pub fn update_attacks(
         }
         if a.state != before {
             debug!("{:?} from {:?}: {:?} -> {:?} at ({:.1}, {:.1}) q {:.2}", a.kind, a.from, before, a.state, a.pos.x, a.pos.y, a.quality);
+            if let Ok(on) = std::env::var("CCB_SHOT_ON") {
+                let mut it = on.split(':');
+                let (k, st, n) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().and_then(|v| v.parse().ok()).unwrap_or(10));
+                if let Some(shot) = shot.as_mut().filter(|s| s.0.is_none()) {
+                    if a.kind.gesture_group() == k && format!("{:?}", a.state).eq_ignore_ascii_case(st) {
+                        shot.0 = Some(n);
+                    }
+                }
+            }
         }
     }
 }

@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
         println!("bone {i} {} parent {:?} flags {:#x} billboard {} s {:?}", bone.name, bone.parent, bone.flags, bone.billboard, bone.scale);
     }
     for mat in &m.materials {
-        println!("material {} cull {} xlu {} {:?}\n  {:?}\n  tev {:?} konst {:?}", mat.name, mat.cull, mat.translucent, mat.textures, mat.pixel, mat.tev_colors, mat.konst_colors);
+        println!("material {} cull {} xlu {} {:?}\n  {:?}\n  tev {:?} konst {:?}\n  chan {:?}", mat.name, mat.cull, mat.translucent, mat.textures, mat.pixel, mat.tev_colors, mat.konst_colors, mat.channels);
         if std::env::var("MATDUMP").is_ok_and(|n| n == mat.name) {
             // Material struct words from 0x40 to 0x420, as hex and float.
             for off in (0x40..0x420).step_by(4) {

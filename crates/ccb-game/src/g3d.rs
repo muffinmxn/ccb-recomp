@@ -110,6 +110,9 @@ pub fn build_material(
         }
         *slot = Some(handle.clone());
     }
+    if std::env::var("CCB_MATDBG").is_ok_and(|n| n == mat.name) {
+        info!("material {}: textures {:?} env {env:?} stages {:?}", mat.name, mat.textures.iter().map(|t| (&t.texture, t.map_id, t.map_mode)).collect::<Vec<_>>(), mat.tev_stages);
+    }
     Some(GxMaterial::from_mdl0(mat, translucent, layers, env))
 }
 
@@ -183,9 +186,14 @@ pub fn spawn_model_skinned(
         .bones
         .iter()
         .map(|b| {
-            commands
+            let e = commands
                 .spawn((Name::new(b.name.clone()), bone_transform(b.scale, b.rotation, b.translation), Visibility::default()))
-                .id()
+                .id();
+            // Billboard bones (the chick's outline) always face the camera.
+            if b.billboard != 0 {
+                commands.entity(e).insert(Billboard { base_scale: Vec3::from(b.scale), grow: 1.0 });
+            }
+            e
         })
         .collect();
     for (i, b) in model.bones.iter().enumerate() {
@@ -254,4 +262,28 @@ pub fn spawn_model_skinned(
         meshes: mesh_entities,
     });
     root
+}
+
+/// A bone that turns to face the camera every frame (MDL0 billboard modes).
+#[derive(Component)]
+pub struct Billboard {
+    pub base_scale: Vec3,
+    /// Extra scale (attack outline discs are grown to peek out around the body).
+    pub grow: f32,
+}
+
+/// Turns billboard bones to face the main (order 0) camera, whatever their parents do.
+pub fn face_camera(
+    cams: Query<(&Camera, &GlobalTransform)>,
+    parents: Query<&GlobalTransform>,
+    mut bones: Query<(&ChildOf, &mut Transform, &Billboard)>,
+) {
+    let Some((_, cam)) = cams.iter().filter(|(c, _)| c.is_active).min_by_key(|(c, _)| c.order) else { return };
+    let cam_rot = cam.compute_transform().rotation;
+    for (parent, mut t, bb) in &mut bones {
+        let Ok(pg) = parents.get(parent.parent()) else { continue };
+        let prot = pg.compute_transform().rotation;
+        t.rotation = prot.inverse() * cam_rot;
+        t.scale = bb.base_scale * bb.grow;
+    }
 }

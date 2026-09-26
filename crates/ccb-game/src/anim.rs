@@ -63,7 +63,7 @@ pub struct AnimPlugin;
 
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (animate_bones, apply_visibility).chain());
+        app.add_systems(Update, (animate_bones, apply_visibility, crate::g3d::face_camera).chain());
     }
 }
 
@@ -111,11 +111,31 @@ fn animate_bones(time: Res<Time>, mut models: Query<(&mut ModelInstance, &mut Bo
 }
 
 /// A mesh is drawn only while its draw bone is visible (NW4R's per-bone visibility).
-fn apply_visibility(models: Query<&ModelInstance, Changed<ModelInstance>>, mut vis: Query<&mut Visibility>) {
-    for inst in &models {
+/// Bones to keep visible whatever the clips say (e.g. an attack's black outline card,
+/// which the original game switches on from code).
+#[derive(Component, Clone)]
+pub struct ShowBones(pub Vec<&'static str>);
+
+fn apply_visibility(
+    models: Query<(&ModelInstance, Option<&ShowBones>), Or<(Changed<ModelInstance>, Added<ShowBones>)>>,
+    mut vis: Query<&mut Visibility>,
+    mut billboards: Query<&mut crate::g3d::Billboard>,
+) {
+    for (inst, show) in &models {
+        // Forced outline discs grow a little so they show around the body.
+        if let Some(show) = show {
+            for (i, n) in inst.bone_names.iter().enumerate() {
+                if show.0.contains(&n.as_str()) {
+                    if let Some(mut bb) = inst.bones.get(i).and_then(|&b| billboards.get_mut(b).ok()) {
+                        bb.grow = 1.08;
+                    }
+                }
+            }
+        }
         for &(bone, mesh) in &inst.meshes {
             if let Ok(mut v) = vis.get_mut(mesh) {
-                let want = if inst.bone_visible.get(bone).copied().unwrap_or(true) { Visibility::Inherited } else { Visibility::Hidden };
+                let forced = show.is_some_and(|s| inst.bone_names.get(bone).is_some_and(|n| s.0.contains(&n.as_str())));
+                let want = if forced || inst.bone_visible.get(bone).copied().unwrap_or(true) { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != want {
                     *v = want;
                 }

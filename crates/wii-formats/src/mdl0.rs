@@ -137,6 +137,17 @@ pub struct Material {
     pub cull: u32,
     /// Drawn in the translucent pass.
     pub translucent: bool,
+    /// Lighting channels (COLOR0/1): material color, ambient color, color control, alpha
+    /// control (GX_SetChanCtrl bits: 0 matsrc vertex, 1 lighting enable, 6 ambsrc vertex).
+    pub channels: [Channel; 2],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Channel {
+    pub mat_color: [u8; 4],
+    pub amb_color: [u8; 4],
+    pub color_ctrl: u32,
+    pub alpha_ctrl: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -388,6 +399,13 @@ impl Model {
                 let stage_count = d[mt + 0x16] as usize;
                 let shader_offset = rel(mt, be32(d, mt + 0x28));
                 let tev_stages = parse_shader(d, shader_offset, stage_count);
+                // Light channel data: flags, then per channel mat color, amb color, ctrls.
+                let chan = |i: usize| {
+                    let o = mt + 0x3f0 + 4 + i * 0x14;
+                    let c4 = |o: usize| [d[o], d[o + 1], d[o + 2], d[o + 3]];
+                    Channel { mat_color: c4(o), amb_color: c4(o + 4), color_ctrl: be32(d, o + 8), alpha_ctrl: be32(d, o + 12) }
+                };
+                let channels = if d.len() > mt + 0x3f0 + 0x2c { [chan(0), chan(1)] } else { Default::default() };
                 material_offsets.push(mt);
                 materials.push(Material {
                     name: mname,
@@ -398,6 +416,7 @@ impl Model {
                     pixel,
                     tev_colors,
                     konst_colors,
+                    channels,
                     textures,
                     cull: be32(d, mt + 0x18),
                     translucent: be32(d, mt + 0x10) & 0x8000_0000 != 0,

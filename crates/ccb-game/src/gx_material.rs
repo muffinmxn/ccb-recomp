@@ -32,6 +32,8 @@ pub struct GxParams {
     pub konst: [Vec4; 4],
     /// Texture-coordinate matrix rows: `uv' = (dot(row0.xyz, (u, v, 1)), dot(row1.xyz, (u, v, 1)))`.
     pub tex_mtx: [Vec4; 2],
+    /// Lighting channel COLOR0A0 (the rasterized color when it comes from the material).
+    pub chan0: Vec4,
 }
 
 impl Default for GxParams {
@@ -44,6 +46,7 @@ impl Default for GxParams {
             regs: [Vec4::ZERO; 4],
             konst: [Vec4::ZERO; 4],
             tex_mtx: [Vec4::new(1.0, 0.0, 0.0, 0.0), Vec4::new(0.0, 1.0, 0.0, 0.0)],
+            chan0: Vec4::ONE,
         }
     }
 }
@@ -139,8 +142,13 @@ impl GxMaterial {
             n as u32,
             at0 as u32 | (at1 as u32) << 3 | (op as u32) << 6 | (ref0 as u32) << 8 | (ref1 as u32) << 16,
             env[0] as u32 | (env[1] as u32) << 1,
-            0,
+            // bit0/bit1: COLOR0 / ALPHA0 come from the material color (GX_SRC_REG) instead of
+            // vertex colors; other materials (layouts, lines) keep using vertex colors.
+            (mat.channels[0].color_ctrl & 1 ^ 1) | (mat.channels[0].alpha_ctrl & 1 ^ 1) << 1,
         );
+        // Without scene lights the lit channels come out at their material color.
+        let c = mat.channels[0].mat_color;
+        p.chan0 = Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32) / 255.0;
         for (i, st) in mat.tev_stages.iter().take(16).enumerate() {
             p.color_env[i / 4][i % 4] = st.color_env;
             p.alpha_env[i / 4][i % 4] = st.alpha_env;
@@ -157,7 +165,9 @@ impl GxMaterial {
             p.konst[i] = Vec4::new(k[0] as f32, k[1] as f32, k[2] as f32, k[3] as f32) / 255.0;
         }
         let writes_color = pe.color_update && !(pe.blend && pe.src_factor == 0 && pe.dst_factor == 1);
-        let alpha_mode = if translucent && pe.blend && writes_color {
+        // Blending follows the pixel state; opaque-pass decals that blend without depth writes
+        // (the bomb's feathered stripes) blend too.
+        let alpha_mode = if pe.blend && writes_color && (translucent || !pe.z_write) {
             if pe.dst_factor == 1 { AlphaMode::Add } else { AlphaMode::Blend }
         } else if pe.alpha_test != (7, 0, 0, 7, 0) {
             AlphaMode::Mask(0.5) // the shader does the real alpha test

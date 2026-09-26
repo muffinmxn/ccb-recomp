@@ -16,6 +16,8 @@ struct GxParams {
     regs: array<vec4<f32>, 4>,
     konst: array<vec4<f32>, 4>,
     tex_mtx: array<vec4<f32>, 2>,
+    // COLOR0A0 material color; info.w bit0/bit1: use it for color/alpha instead of vertex colors.
+    chan0: vec4<f32>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> gx: GxParams;
@@ -95,6 +97,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 #ifdef VERTEX_COLORS
     ras = in.color;
 #endif
+    if ((gx.info.w & 1u) != 0u) { ras = vec4(gx.chan0.rgb, ras.a); }
+    if ((gx.info.w & 2u) != 0u) { ras.a = gx.chan0.a; }
     // Environment-mapped layers (NW4R env camera) look up by the view-space normal.
     var env_uv = uv;
 #ifdef VERTEX_NORMALS

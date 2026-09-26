@@ -108,6 +108,43 @@ pub struct GameAssets {
     textures: HashMap<String, (Handle<Image>, [u32; 2])>,
     clips: Vec<Arc<Clip>>,
     root: Entity,
+    /// Visible (opaque) width of each weight variant's card, in model units.
+    pub weight_visible: Vec<f32>,
+}
+
+/// Visible width of the widest textured card under `root_bone`: its model width times the
+/// share of the texture's columns that aren't transparent.
+fn card_visible_width(model: &Model, root_bone: &str, textures: &HashMap<String, (Handle<Image>, [u32; 2])>, images: &Assets<Image>) -> Option<f32> {
+    let r = model.bones.iter().position(|b| b.name == root_bone)?;
+    let under = |mut b: usize| loop {
+        if b == r {
+            break true;
+        }
+        match model.bones[b].parent {
+            Some(p) => b = p,
+            None => break false,
+        }
+    };
+    let (mesh, lo, hi) = model
+        .meshes
+        .iter()
+        .filter(|m| under(m.bone) && !m.uvs.is_empty())
+        .map(|m| {
+            let (lo, hi) = m.positions.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[0]), hi.max(p[0])));
+            (m, lo, hi)
+        })
+        .max_by(|a, b| (a.2 - a.1).total_cmp(&(b.2 - b.1)))?;
+    let tex = &model.materials.get(mesh.material)?.textures.first()?.texture;
+    let img = images.get(&textures.get(tex)?.0)?;
+    let data = img.data.as_ref()?;
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let opaque = |x: usize| (0..h).any(|y| data.get((y * w + x) * 4 + 3).is_some_and(|&a| a > 128));
+    let x0 = (0..w).find(|&x| opaque(x))?;
+    let x1 = (0..w).rev().find(|&x| opaque(x))?;
+    // The card's UVs span its width.
+    let (u0, u1) = mesh.uvs.iter().fold((f32::MAX, f32::MIN), |(a, b), uv| (a.min(uv[0]), b.max(uv[0])));
+    let frac = ((x1 + 1 - x0) as f32 / w as f32 / (u1 - u0).abs().max(1e-3)).min(1.0);
+    Some((hi - lo) * frac)
 }
 
 /// Bind-pose extent of a model along one axis.
@@ -174,6 +211,10 @@ impl GameAssets {
             true
         };
         let e = g3d::spawn_model_skinned(commands, self.root, model, &self.textures, meshes, materials, images, &tweak, self.skins.get(name).cloned());
+        // Attack models carry a black outline card that the game shows from code.
+        if model.bones.iter().any(|b| b.name == "outline") {
+            commands.entity(e).insert(crate::anim::ShowBones(vec!["outline"]));
+        }
         commands.entity(e).insert(Transform::from_xyz(0.0, -100.0, 0.0).with_scale(Vec3::splat(self.scale(name, width))));
         e
     }
@@ -269,19 +310,43 @@ impl GameAssets {
             .id()
     }
 
-    /// A plant's vine: a green ribbon whose mesh is rebuilt as it grows.
-    pub fn spawn_stem(&self, commands: &mut Commands, z: f32, meshes: &mut Assets<Mesh>, materials: &mut Assets<GxMaterial>) -> (Entity, Handle<Mesh>) {
-        let mesh = meshes.add(super::barrier::ribbon(&[Vec2::ZERO, Vec2::Y * 0.01], 0.1));
-        let e = commands
+    /// A plant's vine ribbon (its mesh is replaced as it grows).
+    pub fn spawn_stem(&self, commands: &mut Commands, z: f32, color: Vec4, materials: &mut Assets<GxMaterial>) -> Entity {
+        commands
             .spawn((
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(materials.add(super::barrier::solid_material(Vec4::new(0.35, 0.62, 0.12, 1.0)))),
+                MeshMaterial3d(materials.add(super::barrier::solid_material(color))),
                 Transform::from_xyz(0.0, 0.0, z),
+                Visibility::default(),
                 bevy::camera::visibility::NoFrustumCulling,
                 DespawnOnExit(Screen::Level),
             ))
-            .id();
-        (e, mesh)
+            .id()
+    }
+
+    /// Model-space width of the meshes on a bone and all bones below it.
+    pub fn subtree_width(&self, name: &str, root: &str) -> f32 {
+        let Some(model) = self.models.get(name) else { return 1.0 };
+        let Some(r) = model.bones.iter().position(|b| b.name == root) else { return 1.0 };
+        let under = |mut b: usize| loop {
+            if b == r {
+                break true;
+            }
+            match model.bones[b].parent {
+                Some(p) => b = p,
+                None => break false,
+            }
+        };
+        let xs = model.meshes.iter().filter(|m| under(m.bone)).flat_map(|m| m.positions.iter().map(|p| p[0]));
+        let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        if hi > lo { hi - lo } else { 1.0 }
+    }
+
+    /// Model-space width of the meshes on a bone.
+    pub fn bone_width(&self, name: &str, bone: &str) -> f32 {
+        let Some(model) = self.models.get(name) else { return 1.0 };
+        let xs = model.meshes.iter().filter(|m| model.bones.get(m.bone).is_some_and(|b| b.name == bone)).flat_map(|m| m.positions.iter().map(|p| p[0]));
+        let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        if hi > lo { hi - lo } else { 1.0 }
     }
 
     /// A lightning bolt: a bright quad from `bottom` to `top` at `x`.
@@ -386,7 +451,11 @@ pub fn start_match(
             round_winner: None,
         });
         let skins = models.iter().filter_map(|(n, m)| g3d::inverse_binds(m, &mut skin_store).map(|h| (n.clone(), h))).collect();
-        commands.insert_resource(GameAssets { chick: chick_assets, models, skins, widths, textures, clips, root });
+        let weight_visible = (1..=6)
+            .map(|v| models.get("weight").and_then(|m| card_visible_width(m, &format!("weight0{v}"), &textures, &images)).unwrap_or(1.5))
+            .collect::<Vec<_>>();
+        debug!("weight visible widths {weight_visible:?}");
+        commands.insert_resource(GameAssets { chick: chick_assets, models, skins, widths, textures, clips, root, weight_visible });
         commands.insert_resource(tuning);
         Ok(())
     })();
