@@ -71,7 +71,8 @@ impl Cpu {
                 draw_skill_time: range("kiDrawingSkillTime", (0.08, 0.11)),
                 draw_modifier: modifiers,
                 shield_height: range("kiDefendByShieldHeight", (3.0, 5.0)),
-                miss_chance: [0.45, 0.25, 0.1][DIFFICULTY],
+                // Debug: CCB_CPU_MISS=1 makes every CPU shield miss.
+                miss_chance: std::env::var("CCB_CPU_MISS").ok().and_then(|v| v.parse().ok()).unwrap_or([0.45, 0.25, 0.1][DIFFICULTY]),
                 quality: [(0.35, 0.7), (0.5, 0.85), (0.7, 1.0)][DIFFICULTY],
             },
             sides: [

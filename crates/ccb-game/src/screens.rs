@@ -207,17 +207,27 @@ fn game_over_banner(
     m: Option<Res<Match>>,
     data: Res<GameData>,
     mut lyt: ResMut<LayoutAssets>,
-    existing: Query<(), With<GameOverBanner>>,
+    existing: Query<Entity, With<GameOverBanner>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(m) = m else { return };
-    let (Phase::GameOver(_), Some(winner)) = (m.phase, m.winner) else { return };
+    let (text, final_round) = match (m.phase, m.winner, m.round_winner) {
+        (Phase::GameOver(_), Some(w), _) => (if w == Team::Yellow { "YELLOW WINS!" } else { "BLACK WINS!" }, true),
+        (Phase::RoundOver(_), _, Some(w)) => (if w == Team::Yellow { "ROUND TO YELLOW" } else { "ROUND TO BLACK" }, false),
+        _ => {
+            // Clear a finished round's banner.
+            for e in &existing {
+                commands.entity(e).despawn();
+            }
+            return;
+        }
+    };
     if !existing.is_empty() {
         return;
     }
-    let text = if winner == Team::Yellow { "YELLOW WINS!" } else { "BLACK WINS!" };
+    let _ = final_round;
     let _ = &data;
     let strings: HashMap<&str, String> = [("txtMessage", text.to_string()), ("txtBackground", text.to_string())].into_iter().collect();
     let texts = layout::TextSetup { strings, color: None };

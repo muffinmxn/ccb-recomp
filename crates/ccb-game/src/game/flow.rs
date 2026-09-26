@@ -29,6 +29,10 @@ use crate::{
 
 /// Chicks per team: one big, the rest small.
 const CHICKS_PER_TEAM: usize = 5;
+/// Round wins needed to take a duel.
+pub const ROUNDS_TO_WIN: usize = 2;
+/// Pause between rounds.
+const ROUND_BREAK: f32 = 3.5;
 /// Length of the `hud_clockStart*` spin (131 frames at 60 fps).
 const SPIN_TIME: f32 = 131.0 / 60.0;
 
@@ -42,6 +46,8 @@ pub enum Phase {
     Incoming,
     /// Short pause after an attack resolves.
     Finish(f32),
+    /// A team was wiped out but the duel goes on.
+    RoundOver(f32),
     GameOver(f32),
 }
 
@@ -70,6 +76,9 @@ pub struct Match {
     pub special_timer: f32,
     /// A traced special ready to launch: (from team, attack, quality).
     pub pending_special: Option<(Team, AttackKind, f32)>,
+    /// Rounds won per team; the round winner of the last round.
+    pub rounds_won: [usize; 2],
+    pub round_winner: Option<Team>,
 }
 
 impl Match {
@@ -92,6 +101,7 @@ impl Match {
 /// Models and textures used by gameplay, from `common.brres` and the level's theme archive.
 #[derive(Resource)]
 pub struct GameAssets {
+    pub chick: ChickAssets,
     models: HashMap<String, Model>,
     /// Inverse bind poses of skinned models (e.g. the tentacle).
     skins: HashMap<String, Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
@@ -299,14 +309,7 @@ pub fn start_match(
         let root = commands.spawn((Name::new("gameplay"), Transform::default(), Visibility::default(), DespawnOnExit(Screen::Level))).id();
         let chick_assets = ChickAssets::new(common.model("chick")?, textures.clone());
 
-        // Chicks spread over each half.
-        for team in [Team::Yellow, Team::Black] {
-            let (lo, hi) = tuning.side_range(team);
-            for i in 0..CHICKS_PER_TEAM {
-                let x = lo + (hi - lo) * (i as f32 + 0.5) / CHICKS_PER_TEAM as f32 + rng.range((-0.4, 0.4));
-                spawn_chick(&mut commands, root, &chick_assets, team, x, i == 1, &tuning, &mut meshes, &mut materials, &mut images);
-            }
-        }
+        spawn_teams(&mut commands, root, &chick_assets, &tuning, &mut rng, &mut meshes, &mut materials, &mut images);
 
         // The player's attack interface, laid out like the original's 1P screen: the three
         // basic attacks as round buttons bottom right, the level's special on the blue arc
@@ -360,14 +363,37 @@ pub fn start_match(
             special: None,
             special_timer: rng.range(tuning.special_first),
             pending_special: None,
+            rounds_won: [0, 0],
+            round_winner: None,
         });
         let skins = models.iter().filter_map(|(n, m)| g3d::inverse_binds(m, &mut skin_store).map(|h| (n.clone(), h))).collect();
-        commands.insert_resource(GameAssets { models, skins, widths, textures, clips, root });
+        commands.insert_resource(GameAssets { chick: chick_assets, models, skins, widths, textures, clips, root });
         commands.insert_resource(tuning);
         Ok(())
     })();
     if let Err(e) = r {
         error!("failed to start match: {e:#}");
+    }
+}
+
+/// Spawns both teams' chicks spread over their halves (one big chick each).
+#[allow(clippy::too_many_arguments)]
+fn spawn_teams(
+    commands: &mut Commands,
+    root: Entity,
+    chick_assets: &ChickAssets,
+    tuning: &Tuning,
+    rng: &mut Rng,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<GxMaterial>,
+    images: &mut Assets<Image>,
+) {
+    for team in [Team::Yellow, Team::Black] {
+        let (lo, hi) = tuning.side_range(team);
+        for i in 0..CHICKS_PER_TEAM {
+            let x = lo + (hi - lo) * (i as f32 + 0.5) / CHICKS_PER_TEAM as f32 + rng.range((-0.4, 0.4));
+            spawn_chick(commands, root, chick_assets, team, x, i == 1, tuning, meshes, materials, images);
+        }
     }
 }
 
@@ -436,29 +462,47 @@ pub fn run_match(
     mut commands: Commands,
     time: Res<Time>,
     tuning: Res<Tuning>,
+    assets: Res<GameAssets>,
     mut m: ResMut<Match>,
     mut rng: ResMut<Rng>,
     chicks: Query<&Chick>,
+    chick_entities: Query<Entity, With<Chick>>,
+    attack_entities: Query<Entity, With<Attack>>,
+    barriers: Query<Entity, With<super::barrier::Barrier>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GxMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     attacks: Query<&Attack>,
     mut next: ResMut<NextState<Screen>>,
     mut sfx: ResMut<crate::sfx::Sfx>,
 ) {
     let dt = time.delta_secs();
-    if !matches!(m.phase, Phase::GameOver(_)) {
+    if !matches!(m.phase, Phase::GameOver(_) | Phase::RoundOver(_)) {
         m.match_time += dt;
         let alive = |t: Team| chicks.iter().filter(|c| c.team == t && c.alive()).count();
         for t in [Team::Yellow, Team::Black] {
-            if alive(t) == 0 && !chicks.iter().any(|c| c.team == t && c.dying.is_some()) {
-                m.winner = Some(t.other());
-                m.phase = Phase::GameOver(0.0);
-                sfx.play(if t.other() == Team::Yellow { "SFX_GAME_WIN" } else { "SFX_GAME_OVER" });
+            let wiped = alive(t) == 0 && !chicks.iter().any(|c| c.team == t && c.dying.is_some());
+            if wiped && !matches!(m.phase, Phase::GameOver(_) | Phase::RoundOver(_)) {
+                let w = t.other();
+                m.rounds_won[w.index()] += 1;
+                m.round_winner = Some(w);
                 m.selected = None;
-                info!("game over: {:?} wins", t.other());
+                m.special = None;
+                if m.rounds_won[w.index()] >= ROUNDS_TO_WIN {
+                    m.winner = Some(w);
+                    m.phase = Phase::GameOver(0.0);
+                    info!("game over: {w:?} wins {}-{}", m.rounds_won[w.index()], m.rounds_won[t.index()]);
+                    sfx.play(if w == Team::Yellow { "SFX_GAME_WIN" } else { "SFX_GAME_OVER" });
+                } else {
+                    m.phase = Phase::RoundOver(0.0);
+                    info!("round to {w:?} ({}-{})", m.rounds_won[0], m.rounds_won[1]);
+                    sfx.play("SFX_FIREWORK");
+                }
             }
         }
     }
     // Special windows open between turns' flow; both sides race to trace them.
-    if !matches!(m.phase, Phase::Spin(_) | Phase::GameOver(_)) && !m.specials.is_empty() {
+    if !matches!(m.phase, Phase::Spin(_) | Phase::GameOver(_) | Phase::RoundOver(_)) && !m.specials.is_empty() {
         match m.special {
             Some((kind, left)) => {
                 let left = left - dt;
@@ -548,6 +592,27 @@ pub fn run_match(
                 m.phase = Phase::Finish(t + dt);
             }
         }
+        Phase::RoundOver(t) => {
+            if t + dt >= ROUND_BREAK {
+                // Clear the field and start the next round with a fresh spin.
+                for e in chick_entities.iter().chain(attack_entities.iter()).chain(barriers.iter()) {
+                    commands.entity(e).despawn();
+                }
+                spawn_teams(&mut commands, assets.root, &assets.chick, &tuning, &mut rng, &mut meshes, &mut materials, &mut images);
+                let first = if rng.chance(0.5) { Team::Yellow } else { Team::Black };
+                m.attacker = first;
+                m.attack = None;
+                m.pending = None;
+                m.pending_special = None;
+                m.round_winner = None;
+                m.max_health = [0.0; 2];
+                m.special_timer = rng.range(tuning.special_first);
+                m.hud_anim = Some(format!("hud_clockStart{}", if first == Team::Yellow { "Yellow" } else { "Black" }));
+                m.phase = Phase::Spin(0.0);
+            } else {
+                m.phase = Phase::RoundOver(t + dt);
+            }
+        }
         Phase::GameOver(t) => {
             m.phase = Phase::GameOver(t + dt);
             if t + dt > 6.0 {
@@ -624,6 +689,8 @@ pub fn update_hud(
     mut texts: Query<&mut TextPane>,
 ) {
     let Ok((root, mut hud, mut anim)) = huds.single_mut() else { return };
+    hud.rounds_to_win = ROUNDS_TO_WIN;
+    hud.rounds_won = m.rounds_won;
     for t in [Team::Yellow, Team::Black] {
         let hp: f32 = chicks.iter().filter(|c| c.team == t).map(|c| c.health.max(0.0)).sum();
         let max = &mut m.max_health[t.index()];
