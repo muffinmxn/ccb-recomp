@@ -18,10 +18,11 @@ const BOMB_START_VY: f32 = 15.0;
 const BOMB_DAMP: f32 = 0.02;
 /// Model width per unit of bomb size (the model includes the fuse).
 const BOMB_LOOK: f32 = 2.8;
-const WEIGHT_GRAVITY: f32 = 30.0;
+/// A weight drops slowly at first so the defender can react (about 1.4 s from the top).
+const WEIGHT_GRAVITY: f32 = 14.0;
 const WEIGHT_START_Y: f32 = 16.0;
 /// Take-off speed of the sumo's second jump.
-const SUMO_BOUNCE: f32 = 14.0;
+const SUMO_BOUNCE: f32 = 9.0;
 const STRIKE_RADIUS: f32 = 1.3;
 /// Plant head size (`plantHeadSize`) and vine thickness.
 const PLANT_HEAD: f32 = 1.7;
@@ -659,7 +660,7 @@ pub fn update_attacks(
                 let k = (a.t / (tuning.attack_prepare_time * 0.6)).min(1.0);
                 set_transform(&mut commands, a.aux, shadow_transform(a.target_x, z, a.size * (0.3 + 0.3 * k)));
                 if a.t >= tuning.attack_prepare_time * 0.6 {
-                    a.vel = Vec2::new(0.0, -2.0);
+                    a.vel = Vec2::ZERO;
                     a.visual = Some(assets.spawn_weight(&mut commands, a.variant, a.from, a.size, &mut meshes, &mut materials, &mut images));
                     sfx.play("SFX_ATTACKS_WEIGHT_FLY");
                     a.state = AttackState::Travel;

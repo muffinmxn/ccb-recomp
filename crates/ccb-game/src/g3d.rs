@@ -312,7 +312,10 @@ pub fn face_camera(
     mut bones: Query<(&ChildOf, &mut Transform, &Billboard)>,
 ) {
     let Some((_, cam)) = cams.iter().filter(|(c, _)| c.is_active).min_by_key(|(c, _)| c.order) else { return };
-    let cam_rot = cam.compute_transform().rotation;
+    // Upright towards the camera (turned about Y only): tilted to face the slightly downward
+    // camera exactly, an outline disc's top leans back into the level wall behind the chicks.
+    let fwd = cam.forward();
+    let cam_rot = Quat::from_rotation_y(f32::atan2(-fwd.x, -fwd.z));
     for (parent, mut t, bb) in &mut bones {
         let Ok(pg) = parents.get(parent.parent()) else { continue };
         let prot = pg.compute_transform().rotation;

@@ -53,6 +53,8 @@ pub struct Trace {
     times: Vec<f32>,
     clock: f32,
     started: bool,
+    /// Closest the pointer came to each dot hit so far.
+    miss: Vec<f32>,
     /// Traced and waiting for the trigger: quality.
     armed: Option<f32>,
     /// When it was traced (on `clock`), the upgrade hit on the target, and whether the
@@ -60,6 +62,16 @@ pub struct Trace {
     armed_at: f32,
     upgrade: u8,
     offered: bool,
+}
+
+/// Accuracy share of the quality: passing a dot within `upgradeDotsCollisionDistanceGreen`
+/// counts fully, dropping to half at the outer (white) radius.
+pub fn trace_accuracy(miss: &[f32], green: f32, white: f32) -> f32 {
+    if miss.is_empty() {
+        return 1.0;
+    }
+    let per = miss.iter().map(|&d| 1.0 - 0.5 * ((d - green) / (white - green).max(1e-3)).clamp(0.0, 1.0));
+    per.sum::<f32>() / miss.len() as f32
 }
 
 pub fn trace_quality(times: &[f32], dots: usize, timing: [f32; 5]) -> f32 {
@@ -157,18 +169,28 @@ pub fn player_gesture(
         return;
     }
     trace.clock += time.delta_secs();
-    let radius = tuning.gesture_dot_radius;
+    let radius = tuning.up.hit_r.max(tuning.gesture_dot_radius);
+    let green = tuning.gesture_dot_radius.min(14.0);
     if let Some(p) = pointer.pos.filter(|_| pointer.pressed) {
         let next = trace.next;
+        // Still near the last dot: keep the closest pass.
+        if next > 0 {
+            let d = p.distance(trace.dots[next - 1]);
+            if let Some(m) = trace.miss.get_mut(next - 1) {
+                *m = m.min(d);
+            }
+        }
         if next < trace.dots.len() && p.distance(trace.dots[next]) <= radius && (trace.started || next == 0) {
             trace.started = true;
             trace.next += 1;
+            let d = p.distance(trace.dots[next]);
+            trace.miss.push(d);
             sfx.play("SFX_ATTACK_IFC_DOT_HIT");
             let c = trace.clock;
             trace.times.push(c);
         }
     }
-    let q = trace_quality(&trace.times, trace.dots.len(), tuning.gesture_timing);
+    let q = trace_quality(&trace.times, trace.dots.len(), tuning.gesture_timing) * trace_accuracy(&trace.miss, green, radius);
     view.mode[team.index()] = Mode::Tracing { kind, done: trace.next, quality: q };
     let finished = trace.next == trace.dots.len() && !trace.dots.is_empty();
     let released = trace.started && !pointer.pressed;
@@ -193,6 +215,12 @@ mod tests {
     fn fast_complete_trace_is_perfect() {
         let times: Vec<f32> = (0..10).map(|i| i as f32 * 0.15).collect();
         assert!((super::trace_quality(&times, 10, [5.0, 10.0, 0.2, 0.4, 0.05]) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sloppy_dots_cost_accuracy() {
+        assert_eq!(super::trace_accuracy(&[5.0, 10.0], 14.0, 24.0), 1.0);
+        assert!((super::trace_accuracy(&[24.0, 24.0], 14.0, 24.0) - 0.5).abs() < 1e-5);
     }
 
     #[test]

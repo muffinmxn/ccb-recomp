@@ -203,7 +203,10 @@ pub fn spawn_chick(
 
 /// Converts the cfg's jump values (`chickBaseVelX/Y`) into a take-off speed: a chick hops
 /// about its own height and a chick-width sideways every ~0.45 s.
-const JUMP_SCALE: f32 = 0.095;
+const JUMP_SCALE: f32 = 0.085;
+/// Time a chick stays down after landing before the next hop (the original's soft body
+/// squashes into its springs before jumping again).
+const LAND_DWELL: f32 = 0.22;
 
 pub fn move_chicks(
     mut commands: Commands,
@@ -264,7 +267,7 @@ pub fn move_chicks(
             }
             if let Some(j) = c.jump {
                 let j = j + h;
-                if j >= jc.delay {
+                if j >= jc.delay + LAND_DWELL {
                     // Poisoned chicks hop slower (`chickSickFac`).
                     let slow = if c.sick > 0.0 { tuning.up.sick_fac } else { 1.0 };
                     c.vel = Vec2::new(jc.vel.x * c.dir * slow, jc.vel.y) * JUMP_SCALE;

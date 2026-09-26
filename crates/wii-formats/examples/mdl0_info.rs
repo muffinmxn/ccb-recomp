@@ -6,7 +6,7 @@ fn main() -> anyhow::Result<()> {
     let b = wii_formats::brres::Brres::parse(&data)?;
     let m = b.model(&a[2])?;
     for (i, bone) in m.bones.iter().enumerate() {
-        println!("bone {i} {} parent {:?} flags {:#x} billboard {} s {:?}", bone.name, bone.parent, bone.flags, bone.billboard, bone.scale);
+        println!("bone {i} {} parent {:?} flags {:#x} billboard {} s {:?} t {:?}", bone.name, bone.parent, bone.flags, bone.billboard, bone.scale, bone.translation);
     }
     for mat in &m.materials {
         println!("material {} cull {} xlu {} {:?}\n  {:?}\n  tev {:?} konst {:?}\n  chan {:?}", mat.name, mat.cull, mat.translucent, mat.textures, mat.pixel, mat.tev_colors, mat.konst_colors, mat.channels);

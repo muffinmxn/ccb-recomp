@@ -123,6 +123,8 @@ pub(super) fn ribbon(points: &[Vec2], thickness: f32) -> Mesh {
     m
 }
 
+/// Lines are drawn this far in front of the chicks (see [`lifted`]).
+const BARRIER_DZ: f32 = 0.6;
 /// Extra width of a line's black outline.
 const OUTLINE: f32 = 0.09;
 
@@ -153,7 +155,7 @@ pub fn spawn_barrier(
         .spawn((
             Mesh3d(meshes.add(stroke(&points, w))),
             MeshMaterial3d(material.clone()),
-            Transform::from_xyz(0.0, 0.0, tuning.plane_z + 0.6),
+            Transform::from_xyz(0.0, 0.0, tuning.plane_z + BARRIER_DZ),
             DespawnOnExit(crate::Screen::Level),
         ))
         .insert(Barrier { team, points, drawing, age: 0.0, flash: 0.0, material, outline, outline_material, dirty: false })
@@ -235,6 +237,15 @@ pub fn player_draw_barrier(
     }
 }
 
+/// Where to draw art that sits `dz` in front of the gameplay plane but should line up on
+/// screen with the plane (lines under the pointer, next to the chicks): scaled towards the
+/// camera eye so every point stays on its own view ray.
+pub fn lifted(eye: Vec3, plane_z: f32, dz: f32) -> Transform {
+    let s = (eye.z - plane_z - dz) / (eye.z - plane_z).max(1e-3);
+    Transform::from_xyz(eye.x * (1.0 - s), eye.y * (1.0 - s), plane_z + dz).with_scale(Vec3::new(s, s, 1.0))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn update_barriers(
     mut commands: Commands,
     time: Res<Time>,
@@ -243,10 +254,15 @@ pub fn update_barriers(
     mut barriers: Query<(Entity, &mut Barrier)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GxMaterial>>,
+    cam: Query<&GlobalTransform, With<WorldCamera>>,
 ) {
     let dt = time.delta_secs();
     let mut drawing = [false; 2];
+    let lift = cam.single().ok().map(|g| lifted(g.translation(), tuning.plane_z, BARRIER_DZ));
     for (e, mut b) in &mut barriers {
+        if let Some(t) = lift {
+            commands.entity(e).insert(t);
+        }
         if b.drawing {
             drawing[b.team.index()] = true;
         } else {
