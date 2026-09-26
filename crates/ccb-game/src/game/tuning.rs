@@ -99,11 +99,65 @@ pub struct Tuning {
     pub plant_charred_time: f32,
     // environment
     pub cloud_y: f32,
+    pub sp: SpecialTuning,
     // gesture
     /// (total time for 100%, total time for 0%, per-dot time for 100%, per-dot time for min, min per-dot quality)
     pub gesture_timing: [f32; 5],
     pub gesture_dot_radius: f32,
     pub gesture_panel: [Vec2; 2],
+}
+
+/// Environment events and special attacks (`ingame.model.environment`, `ingame.model.attack`).
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct SpecialTuning {
+    pub cloud_x_per: (f32, f32),
+    pub cloud_speed: (f32, f32),
+    pub cloud_appear: f32,
+    pub cloud_disappear: f32,
+    /// Which side each new cloud appears over (-1 left/yellow, +1 right/black), cycled.
+    pub cloud_sides: Vec<f32>,
+    pub cloud_rain_chance: f32,
+    pub ufo_appear: (f32, f32),
+    pub ufo_disappear: f32,
+    pub ufo_circle_time: f32,
+    pub ufo_circle_radius: f32,
+    pub ufo_circle_center: Vec3,
+    pub octopus_appear: f32,
+    pub octopus_disappear: f32,
+    pub ghost_fly_range: (Vec3, Vec3),
+    pub ghost_speed_background: f32,
+    // lightning
+    pub lightning_approach: f32,
+    pub lightning_effective: f32,
+    pub lightning_damage: DamageSettings,
+    // ufo
+    pub ufo_start: Vec2,
+    pub ufo_fly_speed: f32,
+    pub ufo_fly_away_speed: f32,
+    pub ufo_beam_y: f32,
+    pub ufo_attack_time: (f32, f32),
+    pub ufo_beam_speed: f32,
+    pub ufo_beam_shutdown: f32,
+    pub ufo_kidnap_offset: f32,
+    // ghost
+    pub ghost_duration: (f32, f32),
+    pub ghost_shock: f32,
+    pub ghost_start_delay: f32,
+    pub ghost_delay_increase: f32,
+    pub ghost_damage: DamageSettings,
+    pub ghost_speed: (f32, f32),
+    pub ghost_start_y: f32,
+    // octopus
+    pub octopus_hits: u32,
+    pub octopus_delay: (f32, f32),
+    pub octopus_initial_delay: f32,
+    pub octopus_y_start: f32,
+    pub octopus_y: f32,
+    pub tentacle_hit_size: f32,
+    pub tentacle_time_till_hit: f32,
+    pub tentacle_hit_time: f32,
+    pub tentacle_damage: DamageSettings,
 }
 
 /// `ingame.model.<chick|general>.physics.jumpCond`: chicks hop continuously; a jump starts
@@ -329,6 +383,64 @@ impl Tuning {
             plant_head_dir_interp: at.f32("plantHeadDirInterpolationFac")?,
             plant_charred_time: at.f32("plantCharredTimer")?,
             cloud_y: env.f32("cloudY")?,
+            sp: {
+                let v3 = |b: &ccb_assets::cfg::Block, l: &str| b.vec3(l).map(Vec3::from).unwrap_or(Vec3::ZERO);
+                let pair = |b: &ccb_assets::cfg::Block, a: &str, c: &str, d: (f32, f32)| (b.f32(a).unwrap_or(d.0), b.f32(c).unwrap_or(d.1));
+                let dmg = |l: &str| DamageSettings::from(&at.floats(l).unwrap_or_default());
+                let cloud_sides = env
+                    .lines
+                    .iter()
+                    .find(|l| l.label.as_deref().is_some_and(|x| x.contains("cloudAppearList")))
+                    .map(|l| l.values.iter().skip(1).filter_map(|v| v.parse().ok()).collect())
+                    .unwrap_or_else(|| vec![-1.0, 1.0]);
+                let ghost_lo = env.lines.iter().find(|l| l.label.as_deref().is_some_and(|x| x.starts_with("ghostFlyingRange") && x.ends_with("min"))).map(|l| l.values.iter().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>());
+                let ghost_hi = env.lines.iter().find(|l| l.label.as_deref().is_some_and(|x| x.starts_with("ghostFlyingRange") && x.ends_with("max"))).map(|l| l.values.iter().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>());
+                let to3 = |v: Option<Vec<f32>>, d: Vec3| v.filter(|v| v.len() >= 3).map_or(d, |v| Vec3::new(v[0], v[1], v[2]));
+                SpecialTuning {
+                    cloud_x_per: pair(env, "cloudMinXInPer", "cloudMaxXInPer", (0.45, 0.65)),
+                    cloud_speed: pair(env, "cloudSpeedMin", "cloudSpeedMax", (0.6, 1.0)),
+                    cloud_appear: env.f32("cloudAppearingTimer").unwrap_or(2.0),
+                    cloud_disappear: env.f32("cloudDisappearTimer").unwrap_or(0.5),
+                    cloud_sides,
+                    cloud_rain_chance: env.f32("cloudRainChance").unwrap_or(0.25),
+                    ufo_appear: env.range("ufoAppearingTimer").unwrap_or((1.5, 4.0)),
+                    ufo_disappear: env.f32("ufoDisappearTimer").unwrap_or(1.5),
+                    ufo_circle_time: env.f32("ufoTimeNeededForFullCircle").unwrap_or(8.0),
+                    ufo_circle_radius: env.f32("ufoCircleRadius").unwrap_or(15.0),
+                    ufo_circle_center: v3(env, "ufoCircleCenterPosition"),
+                    octopus_appear: env.f32("octopusAppearingTimer").unwrap_or(1.0),
+                    octopus_disappear: env.f32("octopusDisappearTimer").unwrap_or(3.0),
+                    ghost_fly_range: (to3(ghost_lo, Vec3::new(-10.0, 6.0, -10.0)), to3(ghost_hi, Vec3::new(10.0, 8.5, -8.0))),
+                    ghost_speed_background: env.f32("ghostFlyingSpeedBackground").unwrap_or(5.0),
+                    lightning_approach: at.f32("lightningApproachTimer").unwrap_or(4.0),
+                    lightning_effective: at.f32("lightningEffectiveTimer").unwrap_or(0.5),
+                    lightning_damage: dmg("lightningDamageSettings"),
+                    ufo_start: v3(at, "ufoStartPosition").truncate(),
+                    ufo_fly_speed: at.f32("ufoApproachingSpeed").unwrap_or(2.0),
+                    ufo_fly_away_speed: at.f32("ufoFlyAwaySpeed").unwrap_or(3.7),
+                    ufo_beam_y: at.f32("ufoBeamLowestPoint").unwrap_or(5.9),
+                    ufo_attack_time: pair(at, "ufoAttackMinTime", "ufoAttackMaxTime", (5.0, 8.0)),
+                    ufo_beam_speed: at.f32("ufoBeamSpeed").unwrap_or(1.8),
+                    ufo_beam_shutdown: at.f32("ufoBeamShutdownTime").unwrap_or(0.4),
+                    ufo_kidnap_offset: v3(at, "ufoKidnappedChickOffset").y,
+                    ghost_duration: at.range("ghostAttackDuration").unwrap_or((15.0, 35.0)),
+                    ghost_shock: at.f32("ghostShockDuration").unwrap_or(1.0),
+                    ghost_start_delay: at.f32("ghostAttackStartDelay").unwrap_or(3.6),
+                    ghost_delay_increase: at.f32("ghostAttackDelayIncrease").unwrap_or(3.0),
+                    ghost_damage: dmg("ghostDamageSettings"),
+                    ghost_speed: env.range("ghostFlyingSpeedAttacking").unwrap_or((3.0, 4.0)),
+                    ghost_start_y: env.f32("ghostStartAttackPosY").unwrap_or(12.0),
+                    octopus_hits: at.f32("octopusAttackCounter").unwrap_or(5.0) as u32,
+                    octopus_delay: at.range("octopusAttackDelayTime").unwrap_or((1.0, 1.25)),
+                    octopus_initial_delay: at.f32("ocotopusAttackDelayInitial").unwrap_or(2.0),
+                    octopus_y_start: at.f32("octopusYStart").unwrap_or(-5.3),
+                    octopus_y: at.f32("octopusYOffset").unwrap_or(-1.0),
+                    tentacle_hit_size: at.f32("tentacleHitSize").unwrap_or(1.0),
+                    tentacle_time_till_hit: at.f32("tentacleTimeTillHit").unwrap_or(1.57),
+                    tentacle_hit_time: at.f32("tentacleHitTime").unwrap_or(0.22),
+                    tentacle_damage: dmg("tentacleDamageSettings"),
+                }
+            },
             gesture_timing,
             gesture_dot_radius: ges.f32("overrideCpSize").unwrap_or(15.0),
             gesture_panel,

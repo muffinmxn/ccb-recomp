@@ -385,7 +385,8 @@ pub fn cpu_turn(
 
         // ---- racing for an open special
         match (m.special, side.special) {
-            (Some((kind, _)), None) if m.pending_special.is_none() && side.armed.is_none() => {
+            // Never call lightning down on your own side.
+            (Some((kind, _)), None) if m.pending_special.is_none() && side.armed.is_none() && m.special_target != Some(team) => {
                 let (trace, quality) = cpu_trace(&ki, kind, gestures.dots(kind), tuning.gesture_timing, &mut rng);
                 let duration = rng.range(ki.start_reaction) + trace;
                 side.special = Some((kind, duration, quality));

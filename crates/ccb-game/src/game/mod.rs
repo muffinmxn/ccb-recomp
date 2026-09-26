@@ -15,6 +15,7 @@ pub mod attack_ui;
 pub mod barrier;
 pub mod chick;
 pub mod cursor;
+pub mod env;
 pub mod flow;
 pub mod gesture;
 pub mod rng;
@@ -123,6 +124,7 @@ impl Plugin for GamePlugin {
                 Update,
                 (
                     flow::run_match,
+                    env::update_env,
                     gesture::player_gesture,
                     attack_ui::update_attack_ifc,
                     attack_ui::update_blueprints,

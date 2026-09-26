@@ -75,6 +75,8 @@ pub struct Match {
     pub special_timer: f32,
     /// A traced special ready to launch: (from team, attack, quality).
     pub pending_special: Option<(Team, AttackKind, f32)>,
+    /// Who the open special would hit when not the launcher's opponent (the cloud's side).
+    pub special_target: Option<Team>,
     /// Rounds won per team; the round winner of the last round.
     pub rounds_won: [usize; 2],
     pub round_winner: Option<Team>,
@@ -413,6 +415,7 @@ pub fn start_match(
         commands.insert_resource(Trace::default());
         commands.insert_resource(Cpu::load(&data)?);
         commands.insert_resource(Ink([tuning.ink_max; 2]));
+        commands.insert_resource(super::env::Env::default());
         commands.insert_resource(Match {
             phase: Phase::Spin(0.0),
             attacker: first,
@@ -426,10 +429,13 @@ pub fn start_match(
             winner: None,
             hud_anim: Some(format!("hud_clockStart{side}")),
             // One special per arena, as on the arena screen.
-            specials: available.iter().copied().find(|k| !k.is_basic() && k.implemented()).into_iter().collect(),
+            // The level's environment special and lightning (from the drifting clouds).
+            specials: available.iter().copied().filter(|k| !k.is_basic() && k.implemented()).collect(),
             special: None,
-            special_timer: rng.range(tuning.special_first),
+            // Debug: CCB_ENV_AT=<seconds> brings the first environment event forward.
+            special_timer: std::env::var("CCB_ENV_AT").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| rng.range(tuning.special_first)),
             pending_special: None,
+            special_target: None,
             rounds_won: [0, 0],
             round_winner: None,
         });
@@ -439,6 +445,7 @@ pub fn start_match(
             .collect::<Vec<_>>();
         debug!("weight visible widths {weight_visible:?}");
         commands.insert_resource(GameAssets { chick: chick_assets, models, skins, widths, textures, clips, root, weight_visible });
+        debug!("special tuning {:?}", tuning.sp);
         commands.insert_resource(tuning);
         Ok(())
     })();
@@ -566,48 +573,6 @@ pub fn run_match(
                     sfx.play("SFX_FIREWORK");
                 }
             }
-        }
-    }
-    // Special windows open between turns' flow; both sides race to trace them.
-    if !matches!(m.phase, Phase::Spin(_) | Phase::GameOver(_) | Phase::RoundOver(_)) && !m.specials.is_empty() {
-        match m.special {
-            Some((kind, left)) => {
-                let left = left - dt;
-                if left <= 0.0 {
-                    m.special = None;
-                    if m.selected == Some(kind) {
-                        m.selected = None;
-                    }
-                } else {
-                    m.special = Some((kind, left));
-                }
-            }
-            None => {
-                m.special_timer -= dt;
-                if m.special_timer <= 0.0 {
-                    let specials = m.specials.clone();
-                    if let Some(kind) = rng.pick(&specials) {
-                        info!("special window: {kind:?}");
-                        sfx.play("SFX_ATTACK_IFC_SELECTOR_EVENT_ACTIVATED");
-                        m.special = Some((kind, tuning.special_window));
-                    }
-                    m.special_timer = rng.range(tuning.special_every);
-                }
-            }
-        }
-    }
-    if let Some((from, kind, quality)) = m.pending_special.take() {
-        let target = from.other();
-        let xs: Vec<f32> = chicks.iter().filter(|c| c.team == target && c.alive()).map(|c| c.pos.x).collect();
-        let (lo, hi) = tuning.side_range(target);
-        let aim = rng.pick(&xs).unwrap_or((lo + hi) / 2.0);
-        let tx = (aim + (1.0 - quality) * 2.0 * (rng.f32() * 2.0 - 1.0)).clamp(lo, hi);
-        info!("{from:?} wins the {kind:?} race");
-        commands.spawn((Attack::new(kind, from, quality, tx), DespawnOnExit(Screen::Level)));
-        sfx.play("SFX_ATTACK_IFC_LAUNCH");
-        m.special = None;
-        if m.selected == Some(kind) {
-            m.selected = None;
         }
     }
     match m.phase {

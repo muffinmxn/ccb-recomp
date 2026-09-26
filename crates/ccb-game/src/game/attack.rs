@@ -26,13 +26,10 @@ const PLANT_HEAD: f32 = 1.0;
 const STEM_WIDTH: f32 = 0.16;
 const STEM_OUTLINE: f32 = 0.28;
 const PLANT_LIFETIME: f32 = 10.0;
-const UFO_Y: f32 = 6.2;
-const UFO_BEAM_TIME: f32 = 1.4;
-const TENTACLE_Y: f32 = 1.1;
+/// Model sizes for the specials (the ghost's loop clip scales it up ~2.6x).
+const GHOST_LOOK: f32 = 0.85;
+const OCTOPUS_LOOK: f32 = 5.5;
 const TENTACLE_LEN: f32 = 7.0;
-const TENTACLE_SWEEP_TIME: f32 = 1.1;
-const GHOST_SPEED: f32 = 4.5;
-const GHOST_BARRIERS_TO_STOP: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AttackState {
@@ -63,10 +60,6 @@ pub struct Attack {
     flash: Option<Entity>,
     /// Weight variant (1..=6: TV, sofa, piano, metal, elephant, whale).
     variant: usize,
-    /// Chicks already hit (sweeping attacks hit each chick once).
-    hit: Vec<Entity>,
-    /// Barriers eaten by a ghost.
-    pub eaten: u32,
     /// Weight width; bomb radius.
     size: f32,
     /// Plant: stem points (root first), the barrier it's climbing (entity, segment, direction),
@@ -81,6 +74,15 @@ pub struct Attack {
     /// A second entity: the weight's shadow, the plant's stem.
     aux: Option<Entity>,
     vine_key: u32,
+    /// The team this attack hits, when not the attacker's opponent (lightning).
+    against: Option<Team>,
+    /// Where the environment object that became this attack was.
+    pub origin: Vec3,
+    /// Specials: the chick being targeted, hits done, time budget, wait timer.
+    victim: Option<Entity>,
+    hits: u32,
+    life: f32,
+    wait: f32,
     /// Blown up early (lightning, touched while drawing): quality to explode with.
     pub detonate: Option<f32>,
 }
@@ -100,8 +102,6 @@ impl Attack {
             effect: None,
             flash: None,
             variant: 1,
-            hit: Vec::new(),
-            eaten: 0,
             size: 1.0,
             path: Vec::new(),
             climbing: None,
@@ -112,12 +112,29 @@ impl Attack {
             high: 0.0,
             aux: None,
             vine_key: 0,
+            against: None,
+            origin: Vec3::ZERO,
+            victim: None,
+            hits: 0,
+            life: 0.0,
+            wait: 0.0,
             detonate: None,
         }
     }
 
     pub fn target(&self) -> Team {
-        self.from.other()
+        self.against.unwrap_or(self.from.other())
+    }
+
+    /// Hits `team` instead of the attacker's opponent.
+    pub fn against(mut self, team: Team) -> Self {
+        self.against = Some(team);
+        self
+    }
+
+    pub fn from_origin(mut self, origin: Vec3) -> Self {
+        self.origin = origin;
+        self
     }
 
 }
@@ -383,6 +400,8 @@ pub fn update_attacks(
 ) {
     let dt = time.delta_secs();
     let z = tuning.plane_z;
+    // Lightning strikes this frame: (team, x range); bombs and plants there get hit too.
+    let mut strikes: Vec<(Team, f32, f32)> = Vec::new();
     for (e, mut a) in &mut attacks {
         a.t += dt;
         let before = a.state;
@@ -589,50 +608,66 @@ pub fn update_attacks(
             }
             // ---------------------------------------------------------------- lightning
             (AttackKind::Lightning, AttackState::Prepare) => {
+                // The dark cloud hangs over its side and charges for `lightningApproachTimer`.
                 if a.visual.is_none() {
-                    sfx.play("SFX_ATTACKS_THUNDER_APPROACHING");
                     a.pos = Vec2::new(a.target_x, tuning.cloud_y);
                     a.visual = Some(assets.spawn(&mut commands, "cloud", a.from, 5.0, &mut meshes, &mut materials, &mut images));
+                    sfx.play("SFX_ATTACKS_THUNDER_APPROACHING");
                 }
-                // The cloud drifts in over its target.
-                let k = (a.t / tuning.attack_prepare_time).min(1.0);
-                let x = a.target_x + (1.0 - k) * 3.0 * -a.from.side();
-                set_transform(&mut commands, a.visual, Transform::from_xyz(x, tuning.cloud_y, z).with_scale(Vec3::splat(assets.scale("cloud", 5.0) * k.max(0.05))));
-                if a.t >= tuning.attack_prepare_time + 0.8 {
-                    let x = a.target_x;
-                    let (bottom, blocked) = match vertical_block(&barriers, target, x, tuning.cloud_y - 0.5, 0.0) {
-                        Some((y, be)) => {
+                let shake = if a.t > tuning.sp.lightning_approach - 1.0 { (a.t * 40.0).sin() * 0.06 } else { 0.0 };
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x + shake, tuning.cloud_y, z).with_scale(Vec3::splat(assets.scale("cloud", 5.0))));
+                if a.t >= tuning.sp.lightning_approach {
+                    // The bolt hits the highest point under the cloud: an earthed line grounds it.
+                    let span = 2.5;
+                    let (lo, hi) = (a.pos.x - span, a.pos.x + span);
+                    let rod = barriers
+                        .iter()
+                        .filter(|(_, b)| b.team == target && b.points.iter().any(|p| p.y <= 0.35))
+                        .filter_map(|(e, b)| b.points.iter().copied().filter(|p| p.x >= lo && p.x <= hi).max_by(|p, q| p.y.total_cmp(&q.y)).map(|top| (e, top)))
+                        .max_by(|x, y| x.1.y.total_cmp(&y.1.y));
+                    let chick_top = chicks
+                        .iter()
+                        .filter(|(_, c)| c.team == target && c.alive() && c.pos.x >= lo && c.pos.x <= hi)
+                        .map(|(_, c)| c.pos + Vec2::Y * c.radius)
+                        .max_by(|p, q| p.y.total_cmp(&q.y));
+                    let (hit, grounded) = match (rod, chick_top) {
+                        (Some((be, top)), c) if c.is_none_or(|c| top.y >= c.y) => {
                             if let Ok((_, mut b)) = barriers.get_mut(be) {
                                 b.flash = 0.4;
                             }
                             sfx.play("SFX_ENV_LINE_GROUNDED");
-                            (y, true)
+                            (top, true)
                         }
-                        None => (0.0, false),
+                        (_, Some(c)) => (c, false),
+                        _ => (Vec2::new(a.pos.x, 0.0), false),
                     };
-                    if !blocked {
-                        let dmg = tuning.bomb_damage.damage(a.quality);
-                        damage_chicks(&mut chicks, &mut sfx, Vec2::new(x, 0.8), STRIKE_RADIUS, STRIKE_RADIUS * 0.6, dmg, 2.0, false);
+                    if !grounded {
+                        let dmg = tuning.sp.lightning_damage.damage(a.quality);
+                        let hits = damage_chicks(&mut chicks, &mut sfx, hit - Vec2::Y * 0.3, STRIKE_RADIUS, STRIKE_RADIUS * 0.6, dmg, 2.0, false);
+                        if hits > 0 {
+                            sfx.play("SFX_CHICKS_ELECTRIFIED");
+                        }
+                        // Bombs and plants under the cloud get it too.
+                        strikes.push((target, lo, hi));
                     }
                     sfx.play("SFX_ATTACKS_THUNDER");
-                    // The strike flash on the cloud.
                     let flash = assets.spawn_posed(&mut commands, "cloudLightning", "cloudLightning__spratzel", a.from, 5.0, &mut meshes, &mut materials, &mut images);
-                    commands.entity(flash).insert(Transform::from_xyz(x, tuning.cloud_y, z + 0.2).with_scale(Vec3::splat(assets.scale("cloudLightning", 5.0))));
+                    commands.entity(flash).insert(Transform::from_xyz(a.pos.x, tuning.cloud_y, z + 0.2).with_scale(Vec3::splat(assets.scale("cloudLightning", 5.0))));
                     a.flash = Some(flash);
-                    a.effect = Some(assets.spawn_bolt(&mut commands, x, bottom, tuning.cloud_y - 0.6, z, &mut meshes, &mut materials));
-                    a.state = if blocked { AttackState::Blocked } else { AttackState::Impact };
+                    a.effect = Some(assets.spawn_bolt(&mut commands, hit.x, hit.y, tuning.cloud_y - 0.6, z + 0.4, &mut meshes, &mut materials));
+                    a.state = if grounded { AttackState::Blocked } else { AttackState::Impact };
                     a.t = 0.0;
                 }
             }
             (AttackKind::Lightning, AttackState::Blocked | AttackState::Impact) => {
-                if a.t > 0.25 {
+                if a.t > tuning.sp.lightning_effective {
                     if let Some(fx) = a.effect.take() {
                         commands.entity(fx).despawn();
                     }
                 }
-                let fade = (1.0 - a.t / 0.8).max(0.01);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.target_x, tuning.cloud_y, z).with_scale(Vec3::splat(assets.scale("cloud", 5.0) * fade)));
-                if a.t >= 0.8 {
+                let fade = (1.0 - a.t / 1.0).max(0.01);
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, tuning.cloud_y, z).with_scale(Vec3::splat(assets.scale("cloud", 5.0) * fade)));
+                if a.t >= 1.0 {
                     a.state = AttackState::Finished;
                 }
             }
@@ -696,170 +731,272 @@ pub fn update_attacks(
             }
             // ---------------------------------------------------------------- UFO (city special)
             (AttackKind::Ufo, AttackState::Prepare) => {
+                // Flies in from the sky over its victim, down to `ufoBeamLowestPoint`.
                 if a.visual.is_none() {
-                    sfx.play("SFX_ATTACKS_UFO_APPEAR");
+                    a.pos = tuning.sp.ufo_start + Vec2::X * a.origin.x.clamp(-12.0, 12.0) * 0.5;
+                    a.life = rng.range(tuning.sp.ufo_attack_time);
                     a.visual = Some(assets.spawn(&mut commands, "ufo", a.from, 3.6, &mut meshes, &mut materials, &mut images));
+                    sfx.play("SFX_ATTACKS_UFO_APPEAR");
                 }
-                // Descends over its target.
-                let k = (a.t / tuning.attack_prepare_time).min(1.0);
-                a.pos = Vec2::new(a.target_x, UFO_Y + (1.0 - k) * 8.0);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
-                if a.t >= tuning.attack_prepare_time {
+                a.victim = pick_victim(&chicks, target, a.target_x, a.victim);
+                let goal = a.victim.and_then(|v| chicks.get(v).ok()).map_or(Vec2::new(a.target_x, tuning.sp.ufo_beam_y), |(_, c)| Vec2::new(c.pos.x, tuning.sp.ufo_beam_y));
+                a.target_x = goal.x;
+                let step = (goal - a.pos).clamp_length_max(6.0 * dt);
+                a.pos += step;
+                if a.pos.distance(goal) < 0.1 {
                     sfx.play("SFX_ATTACKS_UFO_BEAM");
-                    let x = a.target_x;
-                    let (bottom, blocked) = match vertical_block(&barriers, target, x, UFO_Y - 0.6, 0.0) {
-                        Some((y, be)) => {
-                            if let Ok((_, mut b)) = barriers.get_mut(be) {
-                                b.flash = 0.4;
-                            }
-                            (y, true)
-                        }
-                        None => (0.0, false),
-                    };
-                    a.effect = Some(assets.spawn_beam(&mut commands, x, bottom, UFO_Y - 0.6, z, 1.3, Vec4::new(0.5, 0.9, 1.0, 0.6), &mut meshes, &mut materials));
-                    if blocked {
-                        a.state = AttackState::Blocked;
-                    } else {
-                        sfx.play("SFX_ATTACKS_UFO_SUCCESS");
-                        let dmg = tuning.weight_damage.damage(a.quality);
-                        damage_chicks(&mut chicks, &mut sfx, Vec2::new(x, 0.8), 1.4, 1.0, dmg, 0.5, false);
-                        a.state = AttackState::Impact;
-                    }
+                    a.state = AttackState::Travel;
                     a.t = 0.0;
                 }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
             }
-            (AttackKind::Ufo, AttackState::Blocked | AttackState::Impact) => {
-                if a.t > UFO_BEAM_TIME {
+            (AttackKind::Ufo, AttackState::Travel) => {
+                // Beams its victim up (`ufoBeamSpeed`); a line between them breaks the beam.
+                a.life -= dt;
+                let victim = a.victim.and_then(|v| chicks.get(v).ok()).filter(|(_, c)| c.alive()).map(|(e, c)| (e, c.pos, c.radius));
+                let Some((ve, vpos, vr)) = victim else {
+                    a.victim = None;
+                    a.state = if a.life > 0.0 { AttackState::Prepare } else { AttackState::Impact };
+                    continue;
+                };
+                a.pos.x += (vpos.x - a.pos.x).clamp(-3.0 * dt, 3.0 * dt);
+                let beam_bottom = vpos.y + vr;
+                let blocked = vertical_block(&barriers, target, vpos.x, a.pos.y - 0.6, beam_bottom).map(|(_, be)| be);
+                if let Some(be) = blocked {
+                    if let Ok((_, mut b)) = barriers.get_mut(be) {
+                        b.flash = 0.4;
+                    }
+                    if let Ok((_, mut c)) = chicks.get_mut(ve) {
+                        c.held = false;
+                    }
+                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
+                    a.wait = tuning.sp.ufo_beam_shutdown;
+                    a.state = AttackState::Blocked;
+                    a.t = 0.0;
+                } else if let Ok((_, mut c)) = chicks.get_mut(ve) {
+                    c.held = true;
+                    c.pos.x += (a.pos.x - c.pos.x).clamp(-2.0 * dt, 2.0 * dt);
+                    c.pos.y += tuning.sp.ufo_beam_speed * dt;
+                    if c.pos.y >= a.pos.y - tuning.sp.ufo_kidnap_offset - 0.6 {
+                        // Taken for good.
+                        c.held = false;
+                        c.abducted = true;
+                        c.health = 0.0;
+                        c.dying = Some(1.0);
+                        sfx.play("SFX_ATTACKS_UFO_SUCCESS");
+                        a.state = AttackState::Impact;
+                        a.t = 0.0;
+                    }
+                }
+                if a.state == AttackState::Travel && a.life <= 0.0 {
+                    if let Ok((_, mut c)) = chicks.get_mut(ve) {
+                        c.held = false;
+                    }
+                    a.state = AttackState::Impact;
+                    a.t = 0.0;
+                }
+                if a.effect.is_none() {
+                    a.effect = Some(assets.spawn_beam(&mut commands, a.pos.x, 0.0, a.pos.y - 0.6, z, 1.3, Vec4::new(0.5, 0.9, 1.0, 0.45), &mut meshes, &mut materials));
+                }
+                if let Some(fx) = a.effect {
+                    let h = (a.pos.y - 0.6 - beam_bottom + vr * 2.0).max(0.1);
+                    commands.entity(fx).insert(Transform::from_xyz(a.pos.x, beam_bottom - vr * 2.0 + h / 2.0, z + 0.3).with_scale(Vec3::new(1.0, h / (a.pos.y - 0.6).max(0.1), 1.0)));
+                }
+                if a.state != AttackState::Travel {
                     if let Some(fx) = a.effect.take() {
                         commands.entity(fx).despawn();
                         sfx.play("SFX_ATTACKS_UFO_DISAPPEAR");
                     }
-                    // Flies off.
-                    a.pos.y += (a.t - UFO_BEAM_TIME) * 0.6;
                 }
                 set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
-                if a.t >= UFO_BEAM_TIME + 1.5 {
+            }
+            (AttackKind::Ufo, AttackState::Blocked) => {
+                // Beam shut down (`ufoBeamShutdownTime`), then it tries again while it has time.
+                a.life -= dt;
+                if let Some(fx) = a.effect.take() {
+                    commands.entity(fx).despawn();
+                }
+                if a.t >= a.wait + 0.6 {
+                    a.state = if a.life > 0.0 { AttackState::Prepare } else { AttackState::Impact };
+                    a.victim = None;
+                    a.t = 0.0;
+                }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 3.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+            }
+            (AttackKind::Ufo, AttackState::Impact) => {
+                // Flies away (`ufoFlyAwaySpeed`).
+                if let Some(fx) = a.effect.take() {
+                    commands.entity(fx).despawn();
+                }
+                a.pos += Vec2::new(0.4, 1.0) * tuning.sp.ufo_fly_away_speed * 2.0 * dt;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z).with_rotation(Quat::from_rotation_y(a.t * 5.0)).with_scale(Vec3::splat(assets.scale("ufo", 3.6))));
+                if a.t >= 1.8 {
                     a.state = AttackState::Finished;
                 }
             }
             // ---------------------------------------------------------------- sea monster (ship special)
             (AttackKind::Octopus, AttackState::Prepare) => {
-                // A tentacle rises at the outer edge of the target side.
-                let outer = target.side() * (tuning.side_width + 1.2);
+                // The octopus surfaces behind the target side, then starts slapping.
                 if a.visual.is_none() {
+                    let (lo, hi) = tuning.side_range(target);
+                    a.pos = Vec2::new((lo + hi) / 2.0, tuning.sp.octopus_y_start);
+                    a.visual = Some(assets.spawn_posed(&mut commands, "octopus", "octopus__intro", a.from, OCTOPUS_LOOK, &mut meshes, &mut materials, &mut images));
                     sfx.play("SFX_ATTACKS_OCTOPUS_APPEAR");
-                    a.visual = Some(assets.spawn_posed(&mut commands, "tentacle", "tentacle__intro", a.from, TENTACLE_LEN, &mut meshes, &mut materials, &mut images));
                 }
-                let k = (a.t / tuning.attack_prepare_time).min(1.0);
-                a.pos = Vec2::new(outer, -3.0 + (TENTACLE_Y + 3.0) * k);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y - TENTACLE_LEN * 0.5, z).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
-                if a.t >= tuning.attack_prepare_time {
-                    sfx.play("SFX_ATTACKS_OCTOPUS_WHIP");
-                    if let Some(v) = a.visual {
-                        assets.play(&mut commands, v, "tentacle__slap");
-                    }
+                let k = (a.t / 1.05).min(1.0);
+                a.pos.y = tuning.sp.octopus_y_start + (tuning.sp.octopus_y - tuning.sp.octopus_y_start) * k;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z - 6.0).with_scale(Vec3::splat(assets.scale("octopus", OCTOPUS_LOOK))));
+                if a.t >= tuning.sp.octopus_initial_delay {
                     a.state = AttackState::Travel;
                     a.t = 0.0;
+                    a.wait = 0.0;
                 }
             }
             (AttackKind::Octopus, AttackState::Travel) => {
-                // The tip sweeps inward along the ground; a wall across its path stops it.
-                let outer = target.side() * (tuning.side_width + 1.2);
-                let inner = target.side() * (tuning.separator / 2.0 + 0.3);
-                let k = (a.t / TENTACLE_SWEEP_TIME).min(1.0);
-                let prev = a.pos.x;
-                let tip = outer + (inner - outer) * k;
-                let seg_a = Vec2::new(prev, TENTACLE_Y);
-                let seg_b = Vec2::new(tip, TENTACLE_Y);
-                if let Some((p, _, be)) = sweep_hit(&barriers, target, seg_a, seg_b, 0.5) {
-                    if let Ok((_, mut b)) = barriers.get_mut(be) {
-                        b.flash = 0.4;
-                    }
-                    sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
-                    if let Some(v) = a.visual {
-                        assets.play(&mut commands, v, "tentacle__block");
-                    }
-                    a.pos.x = p.x;
-                    a.state = AttackState::Blocked;
+                // `octopusAttackCounter` slaps; lines over the chicks parry them.
+                if a.effect.is_none() && a.t >= a.wait {
+                    a.victim = pick_victim(&chicks, target, rng.range(tuning.side_range(target)), None);
+                    a.target_x = a.victim.and_then(|v| chicks.get(v).ok()).map_or(a.target_x, |(_, c)| c.pos.x);
+                    let out = target.side() * 2.2;
+                    let e = assets.spawn_posed(&mut commands, "tentacle", "tentacle__slap", a.from, TENTACLE_LEN, &mut meshes, &mut materials, &mut images);
+                    // Mirrored by turning around (a negative scale would break the skinning).
+                    let turn = if target.side() > 0.0 { std::f32::consts::PI } else { 0.0 };
+                    commands.entity(e).insert(Transform::from_xyz(a.target_x + out, -0.8, z + 0.2).with_rotation(Quat::from_rotation_y(turn)).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
+                    a.effect = Some(e);
                     a.t = 0.0;
-                } else {
-                    a.pos.x = tip;
-                    let dmg = tuning.bomb_damage.damage(a.quality) * 0.8;
-                    for (ce, mut c) in chicks.iter_mut() {
-                        if c.team == target && c.alive() && (c.pos.x - tip).abs() < 0.9 && !a.hit.contains(&ce) {
-                            c.damage(dmg, Vec2::new(-target.side() * 3.0, 3.0));
-                            sfx.play_one_of(&OUCH, a.hit.len());
-                            a.hit.push(ce);
+                    a.wait = f32::MAX;
+                    sfx.play("SFX_ATTACKS_OCTOPUS_WHIP");
+                }
+                let hit_at = tuning.sp.tentacle_time_till_hit;
+                if a.effect.is_some() && a.t >= hit_at && a.t - dt < hit_at {
+                    let r = tuning.sp.tentacle_hit_size;
+                    let block = [-r * 0.5, 0.0, r * 0.5].iter().find_map(|dx| vertical_block(&barriers, target, a.target_x + dx, 6.0, 0.3));
+                    if let Some((_, be)) = block {
+                        if let Ok((_, mut b)) = barriers.get_mut(be) {
+                            b.flash = 0.4;
+                        }
+                        if let Some(e) = a.effect {
+                            assets.play(&mut commands, e, "tentacle__block");
+                        }
+                        sfx.play("SFX_ATTACKS_OCTOPUS_BLOCKED");
+                    } else {
+                        let dmg = tuning.sp.tentacle_damage.damage(a.quality);
+                        let hits = damage_chicks(&mut chicks, &mut sfx, Vec2::new(a.target_x, 0.6), r + 0.3, r * 0.6, dmg, 2.5, false);
+                        if hits > 0 {
+                            sfx.play("SFX_ATTACKS_OCTOPUS_HIT");
                         }
                     }
-                    if k >= 1.0 {
+                }
+                if a.effect.is_some() && a.t >= hit_at + tuning.sp.tentacle_hit_time + 0.6 {
+                    if let Some(e) = a.effect.take() {
+                        commands.entity(e).despawn();
+                    }
+                    a.hits += 1;
+                    a.t = 0.0;
+                    a.wait = rng.range(tuning.sp.octopus_delay);
+                    if a.hits >= tuning.sp.octopus_hits {
+                        if let Some(v) = a.visual {
+                            assets.play(&mut commands, v, "octopus__outro");
+                        }
                         a.state = AttackState::Impact;
-                        a.t = 0.0;
                     }
                 }
-                // The tentacle leans in from the edge, its tip following the sweep.
-                let reach = (a.pos.x - outer).abs().max(0.5);
-                let angle = (reach / TENTACLE_LEN).clamp(0.0, 1.0).asin();
-                set_transform(&mut commands, a.visual, Transform::from_xyz(outer, 0.0, z).with_rotation(Quat::from_rotation_z(target.side() * angle)).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z - 6.0).with_scale(Vec3::splat(assets.scale("octopus", OCTOPUS_LOOK))));
             }
-            (AttackKind::Octopus, AttackState::Blocked | AttackState::Impact) => {
-                let outer = target.side() * (tuning.side_width + 1.2);
-                // Withdraws.
-                let k = (a.t / 0.8).min(1.0);
-                let x = a.pos.x + (outer - a.pos.x) * k;
-                let reach = (x - outer).abs().max(0.1);
-                let angle = (reach / TENTACLE_LEN).clamp(0.0, 1.0).asin();
-                set_transform(&mut commands, a.visual, Transform::from_xyz(outer, -k * 3.0, z).with_rotation(Quat::from_rotation_z(target.side() * angle)).with_scale(Vec3::splat(assets.scale("tentacle", TENTACLE_LEN))));
-                if a.t >= 1.0 {
+            (AttackKind::Octopus, AttackState::Impact | AttackState::Blocked) => {
+                // Sinks back into the sea.
+                a.pos.y -= dt * 2.0;
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z - 6.0).with_scale(Vec3::splat(assets.scale("octopus", OCTOPUS_LOOK))));
+                if a.t >= 2.0 {
                     sfx.play("SFX_ATTACKS_OCTOPUS_DISAPPEAR");
                     a.state = AttackState::Finished;
                 }
             }
             // ---------------------------------------------------------------- ghost (haunted wood special)
             (AttackKind::Ghost, AttackState::Prepare) => {
+                // Comes in from the background and haunts the target side for `ghostAttackDuration`.
                 if a.visual.is_none() {
+                    a.pos = Vec2::new(a.target_x, tuning.sp.ghost_start_y);
+                    a.life = rng.range(tuning.sp.ghost_duration);
+                    a.wait = tuning.sp.ghost_start_delay;
+                    a.visual = Some(assets.spawn_posed(&mut commands, "ghost", "ghost__loop", a.from, GHOST_LOOK, &mut meshes, &mut materials, &mut images));
                     sfx.play("SFX_ATTACKS_GHOST_APPEAR");
-                    a.pos = Vec2::new(target.side() * (tuning.side_width + 3.0), 8.0);
-                    a.visual = Some(assets.spawn_posed(&mut commands, "ghost", "ghost__loop", a.from, 2.2, &mut meshes, &mut materials, &mut images));
                 }
-                let fade = (a.t / tuning.attack_prepare_time).min(1.0);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2) * fade.max(0.05))));
-                if a.t >= tuning.attack_prepare_time {
-                    a.state = AttackState::Travel;
-                    a.t = 0.0;
-                }
-            }
-            (AttackKind::Ghost, AttackState::Travel) => {
-                // Swoops at its target, eating any barrier it touches.
-                let goal = Vec2::new(a.target_x, 1.0);
-                let dir = (goal - a.pos).normalize_or(Vec2::NEG_Y);
-                let wobble = Vec2::new(0.0, (a.t * 6.0).sin() * 0.8);
-                let next = a.pos + (dir * GHOST_SPEED + wobble) * dt;
-                if let Some((_, _, be)) = sweep_hit(&barriers, target, a.pos, next, 0.8) {
-                    commands.entity(be).despawn();
-                    a.eaten += 1;
-                    sfx.play_one_of(&["SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_1", "SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_2", "SFX_ATTACKS_GHOST_LINEMUNCHER_EAT_3"], a.eaten as usize);
-                    if a.eaten >= GHOST_BARRIERS_TO_STOP {
-                        sfx.play("SFX_ATTACKS_GHOST_DEFEND");
-                        a.state = AttackState::Blocked;
+                let (lo, hi) = tuning.side_range(target);
+                let hover = Vec2::new((lo + hi) / 2.0 + (a.t * 0.7).sin() * (hi - lo) * 0.35, 6.5 + (a.t * 1.3).sin() * 0.6);
+                let step = (hover - a.pos).clamp_length_max(tuning.sp.ghost_speed.1 * dt);
+                a.pos += step;
+                a.life -= dt;
+                if a.t >= a.wait && a.life > 0.0 {
+                    a.victim = pick_victim(&chicks, target, a.pos.x, None);
+                    if a.victim.is_some() {
+                        a.state = AttackState::Travel;
                         a.t = 0.0;
                     }
                 }
-                a.pos = next;
-                if a.pos.distance(goal) < 0.4 {
-                    sfx.play("SFX_ATTACKS_GHOST_DMG");
-                    let dmg = tuning.weight_damage.damage(a.quality);
-                    damage_chicks(&mut chicks, &mut sfx, goal, 1.4, 1.0, dmg, 1.0, false);
+                if a.life <= 0.0 {
                     a.state = AttackState::Impact;
                     a.t = 0.0;
                 }
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2))));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", GHOST_LOOK) * (a.t * 2.0).min(1.0).max(0.05))));
+            }
+            (AttackKind::Ghost, AttackState::Travel) => {
+                // Dives at a chick; touching a line disintegrates it.
+                a.life -= dt;
+                let goal = a.victim.and_then(|v| chicks.get(v).ok()).filter(|(_, c)| c.alive()).map(|(_, c)| c.pos);
+                let Some(goal) = goal else {
+                    a.state = AttackState::Prepare;
+                    a.t = 0.0;
+                    continue;
+                };
+                a.target_x = goal.x;
+                let speed = rng.range(tuning.sp.ghost_speed);
+                let next = a.pos + (goal - a.pos).clamp_length_max(speed * dt);
+                if let Some((_, _, be)) = sweep_hit(&barriers, target, a.pos, next, 0.6) {
+                    if let Ok((_, mut b)) = barriers.get_mut(be) {
+                        b.flash = 0.4;
+                    }
+                    sfx.play("SFX_ATTACKS_GHOST_DEFEND");
+                    a.state = AttackState::Blocked;
+                    a.t = 0.0;
+                } else {
+                    a.pos = next;
+                }
+                if a.state == AttackState::Travel && a.pos.distance(goal) < 0.8 {
+                    // Drains the chick and gives the energy to the other side.
+                    let dmg = tuning.sp.ghost_damage.damage(a.quality);
+                    let mut drained = 0.0;
+                    if let Some(v) = a.victim {
+                        if let Ok((_, mut c)) = chicks.get_mut(v) {
+                            let before = c.health;
+                            c.damage(dmg, Vec2::Y * 2.0);
+                            drained = before - c.health;
+                            sfx.play(if c.dying.is_some() { "SFX_CHICKS_DIE" } else { "SFX_ATTACKS_GHOST_DMG" });
+                        }
+                    }
+                    let weakest = chicks.iter().filter(|(_, c)| c.team == a.from && c.alive()).min_by(|x, y| (x.1.health / x.1.max_health).total_cmp(&(y.1.health / y.1.max_health))).map(|(e, _)| e);
+                    if let Some(w) = weakest {
+                        if let Ok((_, mut c)) = chicks.get_mut(w) {
+                            c.health = (c.health + drained).min(c.max_health);
+                            sfx.play("SFX_ATTACKS_GHOST_CHICKTRANSFER");
+                        }
+                    }
+                    a.hits += 1;
+                    a.wait = tuning.sp.ghost_shock + tuning.sp.ghost_start_delay + tuning.sp.ghost_delay_increase * a.hits as f32;
+                    a.state = AttackState::Prepare;
+                    a.t = 0.0;
+                }
+                if a.state == AttackState::Travel && a.life <= 0.0 {
+                    a.state = AttackState::Impact;
+                    a.t = 0.0;
+                }
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", GHOST_LOOK))));
             }
             (AttackKind::Ghost, AttackState::Blocked | AttackState::Impact) => {
-                // Drifts up and fades away.
-                a.pos.y += dt * 4.0;
+                // Disintegrates (on a line) or drifts off when its time is up.
+                a.pos.y += dt * 3.0;
                 let fade = (1.0 - a.t).max(0.01);
-                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", 2.2) * fade)));
+                set_transform(&mut commands, a.visual, Transform::from_xyz(a.pos.x, a.pos.y, z + 0.4).with_scale(Vec3::splat(assets.scale("ghost", GHOST_LOOK) * fade)));
                 if a.t >= 1.0 {
                     a.state = AttackState::Finished;
                 }
@@ -902,4 +1039,34 @@ pub fn update_attacks(
             }
         }
     }
+    for (team, lo, hi) in strikes {
+        for (_, mut a) in &mut attacks {
+            if a.target() != team || a.pos.x < lo || a.pos.x > hi {
+                continue;
+            }
+            match (a.kind, a.state) {
+                // `bombLightningHitQuality`: a struck bomb goes off at full power.
+                (AttackKind::Bomb, AttackState::Travel | AttackState::Roll) => a.detonate = Some(tuning.bomb_lightning_quality),
+                // Charred.
+                (AttackKind::Plant, AttackState::Travel) => {
+                    a.state = AttackState::Blocked;
+                    a.t = 0.0;
+                    sfx.play("SFX_ATTACKS_PLANT_EXPL");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The target chick nearest `x` (keeping `keep` while it's alive).
+fn pick_victim(chicks: &Query<(Entity, &mut Chick)>, team: Team, x: f32, keep: Option<Entity>) -> Option<Entity> {
+    if let Some(k) = keep.filter(|k| chicks.get(*k).is_ok_and(|(_, c)| c.alive() && !c.abducted)) {
+        return Some(k);
+    }
+    chicks
+        .iter()
+        .filter(|(_, c)| c.team == team && c.alive())
+        .min_by(|a, b| (a.1.pos.x - x).abs().total_cmp(&(b.1.pos.x - x).abs()))
+        .map(|(e, _)| e)
 }

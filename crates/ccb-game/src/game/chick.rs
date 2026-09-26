@@ -49,6 +49,8 @@ pub struct Chick {
     pub radius: f32,
     /// Taken by a UFO: floats up into it instead of fading away.
     pub abducted: bool,
+    /// Held in a UFO beam: no physics, the attack moves it.
+    pub held: bool,
 }
 
 impl Chick {
@@ -150,6 +152,7 @@ pub fn spawn_chick(
             max_health: tuning.chick_health * health,
             radius,
             abducted: false,
+            held: false,
             pos: Vec2::new(x, y),
             vel: Vec2::ZERO,
             on_ground: false,
@@ -205,6 +208,13 @@ pub fn move_chicks(
         }
         c.flash = (c.flash - dt).max(0.0);
         c.squashed = (c.squashed - dt).max(0.0);
+        if c.held {
+            c.vel = Vec2::ZERO;
+            c.jump = None;
+            t.translation = Vec3::new(c.pos.x, c.pos.y, tuning.plane_z);
+            t.rotation = Quat::from_rotation_z((c.flash * 20.0).sin() * 0.2 + 0.3);
+            continue;
+        }
         let jc = if c.general { tuning.general_jump } else { tuning.chick_jump };
         // The side's walls: the level border and the separator.
         let (wall_lo, wall_hi) = match c.team {
