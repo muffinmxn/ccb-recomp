@@ -1,7 +1,7 @@
 //! The player's drawing cursor, from the original's `cursors` layout textures: over the
-//! drawing area the hand becomes a paint point (`cursorPaintY`) with the ink ring floating
-//! above it: the red `CursorNoInk` ring, covered by the full-ink ring (`CursorAllInkMask`) for the
-//! share of ink left.
+//! drawing area the hand becomes a paint point (`cursorPaintY`) inside an ink ring
+//! (`CursorAllInkMask`) that shrinks as ink runs out; with no ink left it turns into the red
+//! `CursorNoInk` ring.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -23,10 +23,11 @@ use crate::{
     Screen,
 };
 
-/// Ring center relative to the paint point, and sizes, in layout units (from `cursors`).
-const RING_OFFSET: Vec2 = Vec2::new(3.0, 49.0);
-const RING_SIZE: f32 = 50.0;
-const POINT_SIZE: f32 = 20.0;
+/// Ring and paint point sizes, in layout units (from `cursors`); the ring sits around the point.
+const RING_SIZE: f32 = 44.0;
+const POINT_SIZE: f32 = 14.0;
+/// Below this share of ink the red "no ink" ring shows.
+const EMPTY: f32 = 0.08;
 
 #[derive(Component)]
 pub enum CursorPart {
@@ -118,9 +119,12 @@ pub fn update_cursor(
     let p = pointer.pos.unwrap_or_default();
     for (e, part, mut t, mut v) in &mut parts {
         *v = if paint { Visibility::Visible } else { Visibility::Hidden };
+        if matches!(part, CursorPart::Ring) && share >= EMPTY {
+            *v = Visibility::Hidden;
+        }
         let (center, size) = match part {
             CursorPart::Point => (p, POINT_SIZE),
-            CursorPart::Ring | CursorPart::Ink => (p + RING_OFFSET, RING_SIZE),
+            CursorPart::Ring | CursorPart::Ink => (p, RING_SIZE),
         };
         t.translation.x = center.x - size / 2.0;
         t.translation.y = center.y + size / 2.0;

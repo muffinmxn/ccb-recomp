@@ -188,6 +188,10 @@ pub fn spawn_chick(
     visual
 }
 
+/// Converts the cfg's jump values (`chickBaseVelX/Y`) into a take-off speed: a chick hops
+/// about its own height and a chick-width sideways every ~0.45 s.
+const JUMP_SCALE: f32 = 0.095;
+
 pub fn move_chicks(
     mut commands: Commands,
     time: Res<Time>,
@@ -237,19 +241,22 @@ pub fn move_chicks(
         c.step_acc += dt.min(0.1);
         while c.step_acc >= h {
             c.step_acc -= h;
-            let mut acc = Vec2::new(0.0, tuning.gravity);
-            if let Some((f, left)) = c.start_force {
-                acc += f;
-                c.start_force = (left > h).then_some((f, left - h));
+            // The jump values act as a push at take-off (scaled by JUMP_SCALE); only the
+            // sideways speed is damped, so chicks drop freely and skid to a stop.
+            if let Some((f, _)) = c.start_force.take() {
+                c.vel += f * JUMP_SCALE;
             }
             if let Some(j) = c.jump {
                 let j = j + h;
-                if j >= jc.delay && j < jc.delay + jc.duration {
-                    acc += Vec2::new(jc.vel.x * c.dir, jc.vel.y);
+                if j >= jc.delay {
+                    c.vel = Vec2::new(jc.vel.x * c.dir, jc.vel.y) * JUMP_SCALE;
+                    c.jump = None;
+                } else {
+                    c.jump = Some(j);
                 }
-                c.jump = (j < jc.delay + jc.duration).then_some(j);
             }
-            c.vel = c.vel * damp + acc * h;
+            c.vel.x *= damp;
+            c.vel.y += tuning.gravity * h;
             let v = c.vel;
             c.pos += v * h;
             // Walls: bounce back and turn around.

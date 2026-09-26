@@ -164,6 +164,8 @@ pub struct SpecialTuning {
 /// `delay` after landing and pushes with `vel` (an acceleration) for `duration`.
 #[derive(Clone, Copy, Debug)]
 pub struct JumpCond {
+    /// `jumpDuration` (the push is applied at once here).
+    #[allow(dead_code)]
     pub duration: f32,
     pub delay: f32,
     pub vel: Vec2,

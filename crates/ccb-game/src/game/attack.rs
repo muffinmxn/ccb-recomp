@@ -22,9 +22,14 @@ const WEIGHT_GRAVITY: f32 = 30.0;
 const WEIGHT_START_Y: f32 = 16.0;
 const STRIKE_RADIUS: f32 = 1.3;
 /// Plant head size (`plantHeadSize`) and vine thickness.
-const PLANT_HEAD: f32 = 1.0;
-const STEM_WIDTH: f32 = 0.16;
-const STEM_OUTLINE: f32 = 0.28;
+const PLANT_HEAD: f32 = 1.7;
+const STEM_WIDTH: f32 = 0.24;
+const STEM_OUTLINE: f32 = 0.38;
+/// `plantSpiralR` / `plantSpiralSegLen`: how the vine winds around a line it climbs.
+const SPIRAL_R: f32 = 0.25;
+const SPIRAL_LEN: f32 = 1.0;
+/// `plantBarrierSegmentDistance`.
+const PLANT_GRAB: f32 = 1.1;
 const PLANT_LIFETIME: f32 = 10.0;
 /// Model sizes for the specials (the ghost's loop clip scales it up ~2.6x).
 const GHOST_LOOK: f32 = 0.85;
@@ -338,6 +343,7 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
                         a.pos = to;
                         let nseg = seg as i32 + dir;
                         a.climbing = None;
+                        a.victim = Some(be);
                         if nseg >= 0 && (nseg as usize) + 1 < pts.len() {
                             let s2 = nseg as usize;
                             let (f2, t2) = if dir > 0 { (pts[s2], pts[s2 + 1]) } else { (pts[s2 + 1], pts[s2]) };
@@ -353,6 +359,28 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
                 _ => a.climbing = None,
             }
         } else {
+            // A line within `plantBarrierSegmentDistance` of the head gets grabbed (not the one
+            // it just climbed off).
+            let head = a.pos;
+            let left_line = a.victim;
+            let near = barriers
+                .iter()
+                .filter(|(e, b)| b.team == target && b.points.len() >= 2 && Some(*e) != left_line)
+                .flat_map(|(e, b)| {
+                    b.points.windows(2).enumerate().map(move |(i, w)| {
+                        let seg = w[1] - w[0];
+                        let t = ((head - w[0]).dot(seg) / seg.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                        (e, i, w[0] + seg * t, if w[1].y >= w[0].y { 1 } else { -1 })
+                    })
+                })
+                .min_by(|x, y| x.2.distance(head).total_cmp(&y.2.distance(head)))
+                .filter(|x| x.2.distance(head) < PLANT_GRAB);
+            if let Some((be, seg, p, dir)) = near {
+                a.path.push(p);
+                a.pos = p;
+                a.climbing = Some((be, seg, dir));
+                return false;
+            }
             // Head for the nearest chick, but never downwards.
             let want = prey.map_or(Vec2::Y, |p| (p - head).normalize_or(Vec2::Y));
             let want = if sprouting { Vec2::Y } else { Vec2::new(want.x, want.y.max(0.0)).normalize_or(Vec2::X * want.x.signum()) };
@@ -376,8 +404,16 @@ fn grow_plant(a: &mut Attack, tuning: &Tuning, barriers: &Query<(Entity, &mut Ba
         // Stay on the target side.
         let (lo, hi) = tuning.side_range(target);
         a.pos.x = a.pos.x.clamp(lo - 0.5, hi + 0.5);
-        if a.path.last().is_none_or(|l| l.distance(a.pos) > 0.08) {
-            a.path.push(a.pos);
+        // Climbing, the vine winds around the line.
+        let shown = if a.climbing.is_some() {
+            a.life += step;
+            let n = Vec2::new(-a.vel.y, a.vel.x);
+            a.pos + n * SPIRAL_R * (a.life / SPIRAL_LEN * std::f32::consts::TAU).sin()
+        } else {
+            a.pos
+        };
+        if a.path.last().is_none_or(|l| l.distance(shown) > 0.08) {
+            a.path.push(shown);
         }
     }
     if a.pos.y > tuning.plant_grow_y_threshold {

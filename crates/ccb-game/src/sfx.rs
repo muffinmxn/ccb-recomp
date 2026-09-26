@@ -15,6 +15,25 @@ use crate::data::GameData;
 pub struct Sfx {
     sounds: HashMap<String, (Handle<AudioSource>, f32)>,
     queue: Vec<String>,
+    /// When each sound (or sound group) last started, to keep repeats from piling up.
+    last: HashMap<String, f32>,
+}
+
+/// Most effects playing at once.
+const MAX_VOICES: usize = 10;
+
+/// Minimum seconds between two starts of a sound, and the group it counts for (the chick
+/// cries share one slot so a blast hitting five chicks doesn't play five cries at once).
+fn spacing(name: &str) -> (&str, f32) {
+    if name.starts_with("SFX_CHICKS_AUA") {
+        ("SFX_CHICKS_AUA", 0.25)
+    } else if name.contains("BLOCKED") || name.contains("GROUNDED") || name.contains("DESTROY_LINE") {
+        (name, 0.3)
+    } else if name.contains("ROLLOVER") || name.contains("DOT_HIT") || name.contains("CLOCK_TICK") {
+        (name, 0.05)
+    } else {
+        (name, 0.12)
+    }
 }
 
 impl Sfx {
@@ -63,9 +82,17 @@ fn load_sfx(data: Res<GameData>, mut sfx: ResMut<Sfx>, mut audio: ResMut<Assets<
     info!("loaded {} sound effects", sfx.sounds.len());
 }
 
-fn play_queued(mut commands: Commands, mut sfx: ResMut<Sfx>) {
+fn play_queued(mut commands: Commands, time: Res<Time<Real>>, mut sfx: ResMut<Sfx>, playing: Query<(), With<AudioPlayer<AudioSource>>>) {
+    let now = time.elapsed_secs();
+    let mut voices = playing.iter().count();
     let queue = std::mem::take(&mut sfx.queue);
     for name in queue {
+        let (group, gap) = spacing(&name);
+        if voices >= MAX_VOICES || sfx.last.get(group).is_some_and(|t| now - t < gap) {
+            continue;
+        }
+        sfx.last.insert(group.to_string(), now);
+        voices += 1;
         match sfx.sounds.get(&name) {
             Some((h, vol)) => {
                 commands.spawn((
