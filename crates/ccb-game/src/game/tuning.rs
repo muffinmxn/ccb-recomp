@@ -22,6 +22,24 @@ pub struct Tuning {
     pub chick_radius: f32,
     pub chick_dying_time: f32,
     pub chick_squashed_time: f32,
+    /// `chickSize` (small chick radius) and `chickGeneralSizeFac`.
+    pub chick_size: f32,
+    pub general_size_fac: f32,
+    pub chick_start_y: f32,
+    pub chick_start_force: (Vec2, Vec2),
+    pub chick_start_force_time: f32,
+    pub chick_dying_fade: f32,
+    pub chick_dying_speed: f32,
+    /// Head turn: angle range (degrees), change-timer range, damping per 60 Hz frame.
+    pub chick_rot_angles: (f32, f32),
+    pub chick_rot_timer: (f32, f32),
+    pub chick_rot_damp: f32,
+    // ingame.model.particleSystem / *.physics.jumpCond
+    pub gravity: f32,
+    pub vel_damp: f32,
+    pub physics_fps: f32,
+    pub chick_jump: JumpCond,
+    pub general_jump: JumpCond,
     // ingame.model.barrier.*
     pub ink_max: f32,
     pub ink_reload: f32,
@@ -58,6 +76,43 @@ pub struct Tuning {
     pub gesture_timing: [f32; 5],
     pub gesture_dot_radius: f32,
     pub gesture_panel: [Vec2; 2],
+}
+
+/// `ingame.model.<chick|general>.physics.jumpCond`: chicks hop continuously; a jump starts
+/// `delay` after landing and pushes with `vel` (an acceleration) for `duration`.
+#[derive(Clone, Copy, Debug)]
+pub struct JumpCond {
+    pub duration: f32,
+    pub delay: f32,
+    pub vel: Vec2,
+    /// `directionChangeAdd/Pow/Fac`: chance to turn around grows with jumps since the last turn.
+    pub dir_add: f32,
+    pub dir_pow: f32,
+    pub dir_fac: f32,
+    pub variance: f32,
+    pub bounce: f32,
+}
+
+impl JumpCond {
+    fn from(v: &[f32]) -> Self {
+        let g = |i: usize, d: f32| v.get(i).copied().unwrap_or(d);
+        Self {
+            duration: g(1, 0.2),
+            delay: g(2, 0.03),
+            vel: Vec2::new(g(3, 120.0), g(4, 100.0)),
+            dir_add: g(7, 4.0),
+            dir_pow: g(8, 2.0),
+            dir_fac: g(9, 1.0),
+            variance: g(10, 0.0),
+            bounce: g(11, 0.75),
+        }
+    }
+
+    /// Chance to change direction on a jump after `count` jumps the same way.
+    pub fn turn_chance(&self, count: u32) -> f32 {
+        let c = count as f32;
+        c.powf(self.dir_pow) / ((c + self.dir_add).powf(self.dir_pow) * self.dir_fac).max(1e-3)
+    }
 }
 
 /// `min max threshold thresholdDamage perfectDamage`: damage scales from `min` at quality 0
@@ -99,6 +154,11 @@ impl Tuning {
         let bomb = cfg.block("ingame.model.attack.bomb.standard")?;
         let env = cfg.block("ingame.model.environment")?;
         let ges = cfg.block("ingame.model.gesture")?;
+        let ps: Vec<f32> = cfg.block("ingame.model.particleSystem")?.values().filter_map(|v| v.parse().ok()).collect();
+        let jump = |name: &str| -> Result<JumpCond> {
+            Ok(JumpCond::from(&cfg.block(name)?.values().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>()))
+        };
+        let v2 = |v: [f32; 3]| Vec2::new(v[0], v[1]);
 
         // Anonymous numbers are located by position in the value stream.
         let misc_v: Vec<f32> = misc.values().filter_map(|v| v.parse().ok()).collect();
@@ -148,6 +208,21 @@ impl Tuning {
             chick_radius: chick.f32("chickSize")? * chick.f32("chickGeneralSizeFac")?,
             chick_dying_time: chick.f32("chickDyingTimer")?,
             chick_squashed_time: chick.f32("chickSquashedTimer")?,
+            chick_size: chick.f32("chickSize")? * chick.f32("chickSizeFac")?,
+            general_size_fac: chick.f32("chickGeneralSizeFac")?,
+            chick_start_y: chick.f32("chickStartPosY")?,
+            chick_start_force: (v2(chick.vec3("chickStartForceMin")?), v2(chick.vec3("chickStartForceMax")?)),
+            chick_start_force_time: chick.f32("chickStartForceDuration")?,
+            chick_dying_fade: chick.f32("chickDyingFadeoutTimer")?,
+            chick_dying_speed: chick.f32("chickDyingMoveSpeed")?,
+            chick_rot_angles: chick.lines.iter().find(|l| l.label.as_deref().is_some_and(|x| x.starts_with("min/max angle"))).and_then(|l| Some((l.values.first()?.parse().ok()?, l.values.get(1)?.parse().ok()?))).unwrap_or((-20.0, 90.0)),
+            chick_rot_timer: chick.lines.iter().find(|l| l.label.as_deref().is_some_and(|x| x.starts_with("min/max timer"))).and_then(|l| Some((l.values.first()?.parse().ok()?, l.values.get(1)?.parse().ok()?))).unwrap_or((0.2, 1.0)),
+            chick_rot_damp: chick.lines.iter().find(|l| l.label.as_deref().is_some_and(|x| x.starts_with("dampening"))).and_then(|l| l.values.first()?.parse().ok()).unwrap_or(0.11),
+            gravity: ps.get(1).copied().unwrap_or(-42.0),
+            vel_damp: ps.get(3).copied().unwrap_or(0.06),
+            physics_fps: ps.get(4).copied().unwrap_or(180.0),
+            chick_jump: jump("ingame.model.chick.physics.jumpCond")?,
+            general_jump: jump("ingame.model.general.physics.jumpCond")?,
             ink_max: bc.f32("barrierAccountMaxPower")?,
             ink_reload: bc.f32("barrierReloadSpeed")?,
             barrier_point_distance: bs.f32("BARRIER_POINT_DISTANCE_THRESHOLD")?,

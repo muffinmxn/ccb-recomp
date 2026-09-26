@@ -346,7 +346,7 @@ fn spawn_teams(
         let (lo, hi) = tuning.side_range(team);
         for i in 0..CHICKS_PER_TEAM {
             let x = lo + (hi - lo) * (i as f32 + 0.5) / CHICKS_PER_TEAM as f32 + rng.range((-0.4, 0.4));
-            spawn_chick(commands, root, chick_assets, team, x, i == 1, tuning, meshes, materials, images);
+            spawn_chick(commands, root, chick_assets, team, x, i == 1, tuning, rng, meshes, materials, images);
         }
     }
 }
