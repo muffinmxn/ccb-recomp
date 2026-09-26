@@ -36,7 +36,7 @@ impl LevelDef {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_level(
+pub fn spawn_level(
     mut commands: Commands,
     opts: Res<Options>,
     mut data: ResMut<GameData>,
@@ -76,7 +76,7 @@ fn spawn_level(
 
         spawn_sky(&mut commands, root, &common, &textures, &mut meshes, &mut materials, &mut images)?;
         let cam = spawn_camera(&mut commands, &data, false)?;
-        commands.entity(cam).insert(DespawnOnExit(crate::Screen::Level));
+        commands.entity(cam).insert((DespawnOnExit(crate::Screen::Level), crate::game::WorldCamera));
 
         // HUD: team names are the teams' hat names ("CHICK GANG" is the default hat).
         let team = crate::layout::display_text(data.msgs.get("CCB_HAT_NAKED").unwrap_or("CHICK GANG"));
@@ -87,10 +87,8 @@ fn spawn_level(
             color: None,
         };
         let hud = crate::layout::spawn_layout(&mut commands, &mut lyt, "hud", &hud_texts, &mut meshes, &mut materials, &mut images)?;
-        // The clock shows every team state at once until the game picks one via an animation.
-        let mut hud_anim = crate::layout::LayoutAnimator::default();
-        hud_anim.play(lyt.animation("hud_clockStartYellow")?);
-        commands.entity(hud).insert((DespawnOnExit(crate::Screen::Level), hud_anim, crate::hud::Hud::default()));
+        // The match flow plays the clock animations (start spin, turn changes).
+        commands.entity(hud).insert((DespawnOnExit(crate::Screen::Level), crate::hud::Hud::default()));
 
         let music = data.read(&format!("sounds/{}", def.music))?;
         commands.spawn((

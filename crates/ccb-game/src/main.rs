@@ -8,6 +8,7 @@
 
 mod anim;
 mod data;
+mod game;
 mod g3d;
 mod gx_material;
 mod hud;
@@ -75,6 +76,9 @@ fn main() -> AppExit {
         }),
         ..default()
     }))
+    // Clamp long frames (slow machines, software rendering) so every gameplay system
+    // advances by the same bounded step and physics stays stable.
+    .insert_resource(Time::<Virtual>::from_max_delta(std::time::Duration::from_millis(50)))
     .insert_resource(ClearColor(Color::WHITE))
     .insert_resource(game_data)
     .insert_resource(layouts)
@@ -87,6 +91,7 @@ fn main() -> AppExit {
         title::TitlePlugin,
         pointer::PointerPlugin,
         hud::HudPlugin,
+        game::GamePlugin,
     ))
     .add_systems(Update, title::hide_panes);
     if opts.screenshot.is_some() {

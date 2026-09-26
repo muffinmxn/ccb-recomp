@@ -13,6 +13,8 @@ use crate::{
 pub struct Pointer {
     /// Layout-space position, `None` when the pointer is off screen.
     pub pos: Option<Vec2>,
+    /// Window position in logical pixels (for picking in the 3D view).
+    pub screen: Option<Vec2>,
     pub pressed: bool,
     pub just_pressed: bool,
     pub just_released: bool,
@@ -62,6 +64,7 @@ fn read_pointer(
 ) {
     let Ok(w) = windows.single() else { return };
     let scale = layout::LAYOUT_HEIGHT / w.height().max(1.0);
+    pointer.screen = w.cursor_position();
     pointer.pos = w
         .cursor_position()
         .map(|c| Vec2::new((c.x - w.width() / 2.0) * scale, (w.height() / 2.0 - c.y) * scale));

@@ -37,7 +37,7 @@ pub struct LayoutPlugin;
 impl Plugin for LayoutPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_ui_camera)
-            .add_systems(Update, (animate_layouts, sync_panes, debug_panes).chain());
+            .add_systems(Update, (animate_layouts, sync_panes, rebuild_text, debug_panes).chain());
     }
 }
 
@@ -220,8 +220,8 @@ pub struct LayoutPane {
     pub base: PaneState,
     pub cur: PaneState,
     origin: u8,
-    /// Entity holding this pane's mesh and material, if it draws anything.
-    visual: Option<Entity>,
+    /// Entity holding this pane's mesh and material (or `TextPane`), if it draws anything.
+    pub visual: Option<Entity>,
     material: Option<Handle<GxMaterial>>,
     material_index: Option<usize>,
     /// Alpha after inheriting from parents (computed each frame).
@@ -254,6 +254,16 @@ impl LayoutRoot {
             .and_then(|&i| self.layout.pane_material(i))
             .and_then(|m| self.materials.get(&m).cloned())
             .unwrap_or_default()
+    }
+}
+
+/// Sets the text of a named text pane.
+pub fn set_text(root: &LayoutRoot, name: &str, text: &str, panes: &Query<&mut LayoutPane>, texts: &mut Query<&mut TextPane>) {
+    let Some(v) = root.pane(name).and_then(|e| panes.get(e).ok()).and_then(|p| p.visual) else { return };
+    if let Ok(mut t) = texts.get_mut(v) {
+        if t.text != text {
+            t.text = text.to_string();
+        }
     }
 }
 
@@ -354,6 +364,49 @@ fn text_meshes(
         .collect()
 }
 
+/// A text pane's glyph source; change `text` to rebuild its meshes.
+#[derive(Component)]
+pub struct TextPane {
+    pub text: String,
+    built: Option<String>,
+    font: Arc<FontAsset>,
+    size: Vec2,
+    position: u8,
+    alignment: u8,
+    font_size: [f32; 2],
+    char_space: f32,
+    line_space: f32,
+    colors: ([u8; 4], [u8; 4]),
+    /// One material per font sheet, reused across rebuilds.
+    materials: Vec<Handle<GxMaterial>>,
+}
+
+fn rebuild_text(
+    mut commands: Commands,
+    mut texts: Query<(Entity, &mut TextPane, Option<&Children>), Changed<TextPane>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    for (e, mut tp, children) in &mut texts {
+        if tp.built.as_deref() == Some(tp.text.as_str()) {
+            continue;
+        }
+        if let Some(ch) = children {
+            for c in ch.iter() {
+                commands.entity(c).despawn();
+            }
+        }
+        let built = text_meshes(&tp.font, &tp.text, tp.size, tp.position, tp.alignment, tp.font_size, tp.char_space, tp.line_space, tp.colors);
+        for (sheet, mesh) in built {
+            let Some(mat) = tp.materials.get(sheet).cloned() else { continue };
+            let g = commands
+                .spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), Transform::default(), RenderLayers::layer(UI_LAYER)))
+                .id();
+            commands.entity(e).add_child(g);
+        }
+        tp.built = Some(tp.text.clone());
+    }
+}
+
 /// Converts message text (`\n` escapes, `\_` icon placeholders) to display text.
 pub fn display_text(s: &str) -> String {
     s.replace("\\n", "\n").replace("\\_", "")
@@ -427,19 +480,32 @@ pub fn spawn_layout(
                 let text = texts.strings.get(p.name.as_str()).cloned().unwrap_or_else(|| text.clone());
                 let (top, bottom) = texts.color.map_or((*color_top, *color_bottom), |c| (c, c));
                 if let Some(fa) = font_asset {
-                    let holder = commands.spawn((Transform::from_xyz(0.0, 0.0, z), Visibility::default(), layer.clone())).id();
-                    commands.entity(e).add_child(holder);
                     let m = layout.materials.get(*mi);
-                    for (sheet, mesh) in text_meshes(
-                        &fa, &text, st.size, *position, *alignment, *font_size, *char_space, *line_space,
-                        (top, bottom),
-                    ) {
-                        let h = materials.add(layout_material(m, fa.sheets.get(sheet).cloned()));
-                        let g = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(h.clone()), Transform::default(), layer.clone())).id();
-                        commands.entity(holder).add_child(g);
-                        mat_handles.entry(*mi).or_default().push(h.clone());
-                        material = Some(h);
-                    }
+                    let sheet_mats: Vec<Handle<GxMaterial>> =
+                        fa.sheets.iter().map(|sh| materials.add(layout_material(m, Some(sh.clone())))).collect();
+                    mat_handles.entry(*mi).or_default().extend(sheet_mats.iter().cloned());
+                    material = sheet_mats.first().cloned();
+                    let holder = commands
+                        .spawn((
+                            Transform::from_xyz(0.0, 0.0, z),
+                            Visibility::default(),
+                            layer.clone(),
+                            TextPane {
+                                text,
+                                built: None,
+                                font: fa,
+                                size: st.size,
+                                position: *position,
+                                alignment: *alignment,
+                                font_size: *font_size,
+                                char_space: *char_space,
+                                line_space: *line_space,
+                                colors: (top, bottom),
+                                materials: sheet_mats,
+                            },
+                        ))
+                        .id();
+                    commands.entity(e).add_child(holder);
                     (visual, material_index) = (Some(holder), Some(*mi));
                 }
             }

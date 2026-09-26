@@ -31,8 +31,17 @@ cargo run --release -p ccb-game                        # title screen
 cargo run --release -p ccb-game -- --level city.1      # a level: also ship.1, graveyard.1, ...
 ```
 
-The title screen is the original `menu` layout with its intro animations and menu music;
-levels load their scene, play the intro animation and music.
+The title screen is the original `menu` layout with its intro animations and menu music.
+PLAY starts a duel against the CPU on the city level:
+
+- On your turn, click an attack (bomb, weight, plant, or the level special), then drag
+  through the dots on the panel bottom-left in order. Faster is stronger. Right-click or the
+  red X cancels.
+- On the CPU's turn, draw ink barriers with the mouse on your half to block its attack
+  (roofs for weights and lightning, lids for plants, angled walls for bombs).
+
+Debug knobs: `CCB_AUTOPLAY=1` (CPU plays both sides), `CCB_SHOWCASE=1` (places every attack
+model on the field), `RUST_LOG=ccb_game::game=debug` (attack/barrier timeline).
 `--screenshot out.png` renders 30 frames (`CCB_SHOT_FRAME=N` to change), saves a screenshot and exits (works headless
 under `xvfb-run` with Mesa's software Vulkan driver).
 

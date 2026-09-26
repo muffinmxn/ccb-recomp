@@ -71,7 +71,14 @@ docs/            per-subsystem reverse-engineering notes
   - [ ] Gesture circle (`blueprints`) and attack buttons (`attackIfc`) — wired up with gameplay in M5.
   - [ ] Custom LYT TEV stages (41 materials), window frames, remaining menu screens (battle settings, coop, credits).
 - [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.
-- [ ] **M6 AI (`ki.cfg`).** CPU opponent driven by the original parameters.
+  - [x] Match flow: clock spin picks the first attacker (`hud_clockStart*`), turns alternate (`hud_clockAttack*`), turn timer from `attackModeTimersDuell`, game over when a team has no chicks.
+  - [x] Chicks: 5 per team (one big with double health), hopping physics, damage, squash, death.
+  - [x] Barriers: pointer drawing on your half, ink account + reload, 1.9 s lifetime, blocking.
+  - [x] Gestures: control points from the `blueprints` layout, quality from `ingame.model.gesture` timings.
+  - [x] Attacks: bomb (arc, deflects off barriers, explodes), weight (variant by quality, blocked by roofs), plant (grows from below, blocked by lids), lightning (level special, blocked by rods/roofs). Damage from the cfg damage settings.
+  - [x] Attack interface like the original 1P screen: basic attacks bottom right, level special on the arc, gesture panel bottom left.
+  - [ ] UFO/ghost/octopus specials and the "race" for specials, attack upgrades (A/B targets), piñata + hats, corncob man, drawing on the enemy side, sound effects.
+- [x] **M6 AI (`ki.cfg`).** CPU attacks after `kiAttackStartTimer` + reaction time with drawing skill/quality per gesture, and defends by drawing shields at `kiDefendByShieldHeight` over the predicted impact, with a difficulty-based miss chance. `CCB_AUTOPLAY=1` lets the CPU play both sides.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**
 - [ ] **M8 Polish.** Particles, SFX from BRSAR, 2-player local, widescreen and high resolution.
 
