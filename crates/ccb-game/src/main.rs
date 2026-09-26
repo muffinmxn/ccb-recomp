@@ -2,31 +2,44 @@
 //!
 //! ```text
 //! ccb-game [--data extracted/files/0002] [--level city.1] [--screenshot out.png]
+//!
+//! Without `--level` the game starts at the title screen.
 //! ```
 
 mod anim;
 mod data;
 mod g3d;
 mod gx_material;
+mod layout;
 mod level;
 mod shot;
+mod title;
 
 use bevy::prelude::*;
+
+/// Top-level game screens.
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Screen {
+    #[default]
+    Title,
+    Level,
+}
 
 #[derive(Resource, Clone)]
 pub struct Options {
     pub data_dir: std::path::PathBuf,
-    pub level: String,
+    /// Start directly in this level instead of the title screen.
+    pub level: Option<String>,
     pub screenshot: Option<std::path::PathBuf>,
 }
 
 fn parse_args() -> Options {
-    let mut o = Options { data_dir: "extracted/files/0002".into(), level: "city.1".into(), screenshot: None };
+    let mut o = Options { data_dir: "extracted/files/0002".into(), level: None, screenshot: None };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--data" => o.data_dir = args.next().expect("--data needs a path").into(),
-            "--level" => o.level = args.next().expect("--level needs a name like city.1"),
+            "--level" => o.level = Some(args.next().expect("--level needs a name like city.1")),
             "--screenshot" => o.screenshot = args.next().map(Into::into),
             other => eprintln!("ignoring unknown argument {other}"),
         }
@@ -44,6 +57,13 @@ fn main() -> AppExit {
             return AppExit::error();
         }
     };
+    let layouts = match layout::LayoutAssets::load(&game_data) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("failed to load layouts: {e:#}");
+            return AppExit::error();
+        }
+    };
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -55,7 +75,16 @@ fn main() -> AppExit {
     }))
     .insert_resource(ClearColor(Color::WHITE))
     .insert_resource(game_data)
-    .add_plugins((gx_material::GxMaterialPlugin, level::LevelPlugin, anim::AnimPlugin));
+    .insert_resource(layouts)
+    .insert_state(if opts.level.is_some() { Screen::Level } else { Screen::Title })
+    .add_plugins((
+        gx_material::GxMaterialPlugin,
+        level::LevelPlugin,
+        anim::AnimPlugin,
+        layout::LayoutPlugin,
+        title::TitlePlugin,
+    ))
+    .add_systems(Update, title::hide_panes);
     if opts.screenshot.is_some() {
         app.add_plugins(shot::ScreenshotPlugin);
     }

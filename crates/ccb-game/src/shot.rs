@@ -18,12 +18,13 @@ impl Plugin for ScreenshotPlugin {
 
 fn take_screenshot(mut commands: Commands, opts: Res<Options>, mut frame: Local<u32>, mut exit: MessageWriter<AppExit>) {
     *frame += 1;
-    if *frame == 30 {
+    let at: u32 = std::env::var("CCB_SHOT_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+    if *frame == at {
         if let Some(path) = opts.screenshot.clone() {
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
         }
     }
-    if *frame == 40 {
+    if *frame == at + 10 {
         exit.write(AppExit::Success);
     }
 }

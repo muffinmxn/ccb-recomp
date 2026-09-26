@@ -27,18 +27,20 @@ cargo run --release -p ccb-tools -- brres extracted/files/0002/models/city.level
 ## Running the game (work in progress)
 
 ```sh
-cargo run --release -p ccb-game -- --level city.1      # also ship.1, graveyard.1, ...
+cargo run --release -p ccb-game                        # title screen
+cargo run --release -p ccb-game -- --level city.1      # a level: also ship.1, graveyard.1, ...
 ```
 
-Loads the level scene from your extracted data, plays its intro animation and music.
-`--screenshot out.png` renders ~30 frames, saves a screenshot and exits (works headless
+The title screen is the original `menu` layout with its intro animations and menu music;
+levels load their scene, play the intro animation and music.
+`--screenshot out.png` renders 30 frames (`CCB_SHOT_FRAME=N` to change), saves a screenshot and exits (works headless
 under `xvfb-run` with Mesa's software Vulkan driver).
 
 ## Crates
 
 | Crate | Purpose |
 |---|---|
-| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0 models, TEX0 textures, CHR0 animations), all GX texture formats |
+| `wii-formats` | WAD, U8, LZ10/LZ11, DOL, TPL, BRRES (MDL0, TEX0, CHR0), BRLYT/BRLAN layouts, BRFNT fonts, all GX texture formats |
 | `ccb-extract` | WAD → `extracted/` |
 | `ccb-assets` | the game's `cfg` tuning files and `msgs` string tables |
 | `ccb-tools` | developer dump tools |

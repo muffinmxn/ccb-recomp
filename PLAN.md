@@ -61,8 +61,12 @@ docs/            per-subsystem reverse-engineering notes
 - [ ] **M3 Engine shell.** Bevy app, asset loading from `extracted/`, music, main loop and states (boot → title → menu → ingame).
   - [x] Level scene loads from `levels.cfg`, camera from `view.cfg`, bone hierarchy + intro animation, level music, headless screenshots.
   - [x] Sky dome + horizon from `common.brres` (its fade stage is runtime-driven; zeroed for play). City, ship and graveyard all render.
-  - [ ] Game states (boot → title → menu → ingame).
+  - [x] Screens: title (default) and level (`--level`).
 - [ ] **M4 2D layouts.** BRLYT panes/pictures/text, BRLAN animation, BRFNT fonts → menus and HUD.
+  - [x] BRLYT/BRLAN/BRFNT parsers (all 29 layouts, 141 animations, 21 fonts parse).
+  - [x] Layout renderer: pane tree, origins, alpha inheritance, default NW4R combiner via the TEV shader, bitmap text.
+  - [x] BRLAN playback with group binding (`pat1`) and timeline windows; title screen matches the original.
+  - [ ] Pointer input + button rollover/click, screen transitions, HUD in levels, custom LYT TEV stages (41 materials), window frames.
 - [ ] **M5 Core gameplay.** Two chick teams, ink, drawing barriers, gestures (weight, bomb, lightning, plant, UFO, ghost, octopus, mushroom), damage and win/lose. Pointer = mouse or Wii Remote-style gamepad cursor.
 - [ ] **M6 AI (`ki.cfg`).** CPU opponent driven by the original parameters.
 - [ ] **M7 Story mode, battle settings, unlocks, save data.**

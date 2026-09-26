@@ -12,7 +12,7 @@ pub struct LevelPlugin;
 
 impl Plugin for LevelPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_level);
+        app.add_systems(OnEnter(crate::Screen::Level), spawn_level);
     }
 }
 
@@ -45,8 +45,9 @@ fn spawn_level(
     mut images: ResMut<Assets<Image>>,
     mut audio: ResMut<Assets<AudioSource>>,
 ) {
+    let level = opts.level.clone().unwrap_or_else(|| "city.1".into());
     let result: Result<()> = (|| {
-        let def = LevelDef::load(&data, &opts.level)?;
+        let def = LevelDef::load(&data, &level)?;
         let common = data.brres("common.brres.LZ")?.to_vec();
         let theme = data.brres(&def.theme_brres)?.to_vec();
         let scene = data.brres(&def.level_brres)?.to_vec();
@@ -55,7 +56,7 @@ fn spawn_level(
         let clips: Vec<Arc<wii_formats::chr0::Chr0>> = scene.bone_animations()?.into_iter().map(Arc::new).collect();
         let clip = |name: &str| clips.iter().find(|c| c.name == name).cloned();
 
-        let root = commands.spawn((Name::new(format!("level.{}", opts.level)), Transform::default(), Visibility::default())).id();
+        let root = commands.spawn((Name::new(format!("level.{level}")), Transform::default(), Visibility::default())).id();
         for (name, _) in scene.folder("3DModels(NW4R)") {
             if name.ends_with("Blend") {
                 continue; // full-screen fade overlay, driven by gameplay
@@ -70,49 +71,76 @@ fn spawn_level(
             }
         }
 
-        // Sky dome and horizon rings, shared by all levels.
-        // Their materials end with a fade stage, `color * (1 - C2.a) + K0.a`, that the game
-        // drives at runtime (the file stores full white); zero it for normal play.
-        // The `levelCityBlend` quad is a full-screen overlay used by level transitions.
-        let sky = common.model("sky")?;
-        let sky_bones: Vec<String> = sky.bones.iter().map(|b| b.name.clone()).collect();
-        let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut crate::gx_material::GxMaterial| {
-            if sky_bones.get(m.bone).is_some_and(|b| b.ends_with("Blend")) {
-                return false;
-            }
-            if mat.params.info.x == 3 {
-                mat.params.regs[3].w = 0.0;
-                mat.params.konst[0].w = 0.0;
-            }
-            true
-        };
-        g3d::spawn_model(&mut commands, root, &sky, &textures, &mut meshes, &mut materials, &mut images, &tweak);
-
-        // Camera from ingame.view.renderer (16:9 variant).
-        let view = data.cfg.block("ingame.view.renderer")?;
-        let cams: Vec<&ccb_assets::cfg::Line> =
-            view.lines.iter().filter(|l| l.label.as_deref() == Some("camPos")).collect();
-        let aims: Vec<&ccb_assets::cfg::Line> =
-            view.lines.iter().filter(|l| l.label.as_deref() == Some("camAim")).collect();
-        let v3 = |l: &ccb_assets::cfg::Line| -> Vec3 {
-            let f: Vec<f32> = l.values.iter().filter_map(|v| v.parse().ok()).collect();
-            Vec3::new(f[0], f[1], f[2])
-        };
-        let (pos, aim) = (v3(cams.last().context("no camPos")?), v3(aims.last().context("no camAim")?));
-        let fov = view.f32("camFov").unwrap_or(35.0);
-        commands.spawn((
-            Camera3d::default(),
-            Tonemapping::None,
-            Projection::Perspective(PerspectiveProjection { fov: fov.to_radians(), ..default() }),
-            Transform::from_translation(pos).looking_at(aim, Vec3::Y),
-        ));
+        spawn_sky(&mut commands, root, &common, &textures, &mut meshes, &mut materials, &mut images)?;
+        spawn_camera(&mut commands, &data, false)?;
 
         let music = data.read(&format!("sounds/{}", def.music))?;
         commands.spawn((AudioPlayer::new(audio.add(AudioSource { bytes: music.into() })), PlaybackSettings::LOOP));
-        info!("loaded level {} ({} + {}, music {})", opts.level, def.theme_brres, def.level_brres, def.music);
+        info!("loaded level {level} ({} + {}, music {})", def.theme_brres, def.level_brres, def.music);
         Ok(())
     })();
     if let Err(e) = result {
-        error!("failed to load level {}: {e:#}", opts.level);
+        error!("failed to load level {level}: {e:#}");
     }
+}
+
+/// Spawns the sky dome and horizon rings shared by all levels and the title screen.
+///
+/// Their materials end with a fade stage, `color * (1 - C2.a) + K0.a`, that the game drives
+/// at runtime (the file stores full white); it is zeroed here for normal play. The
+/// `levelCityBlend` quad is a full-screen overlay used for level transitions and is skipped.
+pub fn spawn_sky(
+    commands: &mut Commands,
+    parent: Entity,
+    common: &Brres,
+    textures: &std::collections::HashMap<String, (Handle<Image>, [u32; 2])>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<crate::gx_material::GxMaterial>,
+    images: &mut Assets<Image>,
+) -> Result<()> {
+    let sky = common.model("sky")?;
+    let sky_bones: Vec<String> = sky.bones.iter().map(|b| b.name.clone()).collect();
+    let tweak = move |m: &wii_formats::mdl0::Mesh, _: &str, mat: &mut crate::gx_material::GxMaterial| {
+        if sky_bones.get(m.bone).is_some_and(|b| b.ends_with("Blend")) {
+            return false;
+        }
+        if mat.params.info.x == 3 {
+            mat.params.regs[3].w = 0.0;
+            mat.params.konst[0].w = 0.0;
+        }
+        true
+    };
+    g3d::spawn_model(commands, parent, &sky, textures, meshes, materials, images, &tweak);
+    Ok(())
+}
+
+/// Spawns the 3D camera from `ingame.view.renderer` (16:9 variant). Menus raise the
+/// camera by `camManagerMenuOffset`.
+pub fn spawn_camera(commands: &mut Commands, data: &GameData, menu: bool) -> Result<()> {
+    let view = data.cfg.block("ingame.view.renderer")?;
+    let lines = |label: &str| -> Vec<Vec3> {
+        view.lines
+            .iter()
+            .filter(|l| l.label.as_deref() == Some(label))
+            .map(|l| {
+                let f: Vec<f32> = l.values.iter().filter_map(|v| v.parse().ok()).collect();
+                Vec3::new(f[0], f[1], f[2])
+            })
+            .collect()
+    };
+    let mut pos = *lines("camPos").last().context("no camPos")?;
+    let mut aim = *lines("camAim").last().context("no camAim")?;
+    if menu {
+        let off = view.vec3("camManagerMenuOffset").map(Vec3::from).unwrap_or(Vec3::ZERO);
+        pos += off;
+        aim += off;
+    }
+    let fov = view.f32("camFov").unwrap_or(35.0);
+    commands.spawn((
+        Camera3d::default(),
+        Tonemapping::None,
+        Projection::Perspective(PerspectiveProjection { fov: fov.to_radians(), ..default() }),
+        Transform::from_translation(pos).looking_at(aim, Vec3::Y),
+    ));
+    Ok(())
 }
